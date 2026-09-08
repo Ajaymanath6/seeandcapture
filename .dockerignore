@@ -1,0 +1,14 @@
+node_modules
+server/node_modules
+.git
+*.log
+.env
+.env.*
+!**/.env.example
+server/.env
+test
+tests
+coverage
+*.md
+extension
+.DS_Store

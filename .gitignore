@@ -1,0 +1,14 @@
+node_modules/
+server/node_modules/
+server/.env
+.env
+.env.*
+!.env.example
+!server/.env.example
+*.log
+.DS_Store
+dist/
+build/
+coverage/
+.npm/
+*.png.bak

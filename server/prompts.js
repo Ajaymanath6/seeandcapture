@@ -1,0 +1,47 @@
+const PRESERVE =
+  "Use the attached image as the ONLY source. Keep the same subjects, composition, framing, and details. Do not invent a new scene, object, or location. Apply only the requested change and return one edited image.";
+
+const PRESETS = {
+  "to-green": {
+    id: "to-green",
+    label: "Change to green",
+    mode: "local-green",
+    prompt:
+      "Recolor this exact image toward green tones. Keep every subject, shape, and layout identical—only shift colors to green.",
+  },
+  "remove-bg": {
+    id: "remove-bg",
+    label: "Remove background",
+    mode: "eden-background-removal",
+    prompt:
+      "Remove the background from this image. Keep the main subject sharp and unchanged on a transparent background.",
+  },
+  "black-white": {
+    id: "black-white",
+    label: "Black and white",
+    mode: "local-grayscale",
+    prompt:
+      "Convert this exact image to black and white. Keep composition, subjects, and detail identical—only remove color.",
+  },
+};
+
+function getPreset(presetId) {
+  if (!presetId || typeof presetId !== "string") return null;
+  return PRESETS[presetId] || null;
+}
+
+function listPresetMeta() {
+  return Object.values(PRESETS).map(({ id, label, prompt, mode }) => ({
+    id,
+    label,
+    prompt,
+    mode,
+  }));
+}
+
+module.exports = {
+  PRESERVE,
+  PRESETS,
+  getPreset,
+  listPresetMeta,
+};
