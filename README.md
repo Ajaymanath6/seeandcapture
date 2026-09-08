@@ -1,12 +1,12 @@
 # See & Capture
 
-Chrome extension + local server: drag-select a region on any page, then click a preset to generate an image variation with **Nano Banana** (Gemini image model).
+Chrome extension + local server: drag-select a region, then apply presets (green / remove background / black & white). Optional **page text**, **image assets**, and **color palettes** enrich the flow without changing the default path when those features are off.
 
 ## What you need
 
 - Google Chrome
 - Node.js 20+ **or** Docker
-- A free Google AI Studio API key: https://aistudio.google.com/apikey
+- At least one API key (Eden recommended for remove-bg)
 
 ## 1. Add your API key
 
@@ -22,55 +22,67 @@ FAL_KEY=paste_your_fal_key_here
 GOOGLE_API_KEY=paste_your_google_key_here
 ```
 
-- **Eden AI** (preferred when set): https://app.edenai.run/  
-- **fal.ai**: https://fal.ai/dashboard/keys  
-- Google Nano Banana: https://aistudio.google.com/apikey  
-
-The server prefers **eden** → **fal** → **nano-banana** based on which keys are present.
 ## 2. Start the local server
 
-**Option A — Node**
-
 ```bash
-cd server
-npm install
-npm start
-```
-
-You should see: `See & Capture server listening on http://127.0.0.1:8787`
-
-**Option B — Docker**
-
-```bash
-docker compose up --build
+cd server && npm install && npm start
 ```
 
 ## 3. Load the extension
 
-1. Open `chrome://extensions`
-2. Turn on **Developer mode**
-3. Click **Load unpacked**
-4. Select the `extension` folder inside this project
+`chrome://extensions` → Developer mode → **Load unpacked** → `extension/`
 
 ## 4. Use it
 
-1. Click the toolbar icon **or** right-click the page → **See & Capture — select area**
-2. Drag a rectangle over what you want
-3. In the modal: left = your crop, right = result
-4. Click any option (Warm tones, Watercolor, etc.)
-5. Wait for Nano Banana — the result appears on the right
+1. Toolbar or right-click → **See & Capture — select area**
+2. Drag a rectangle
+3. With **no asset selected**, use the **3 global badges** at the bottom (Change to green / Remove background / Black and white)
+4. Optional: **Select folder to save**
 
-## Troubleshooting
+### Discover-on-action
 
-| Problem | Fix |
-|---|---|
-| “GOOGLE_API_KEY is missing” | Put a real key in `server/.env` and restart |
-| Request failed / port 8787 | Start the server (`npm start` or Docker) |
-| Capture fails on some pages | Chrome blocks capture on `chrome://` and the Web Store; try a normal website |
-| Extension outdated after edits | On `chrome://extensions`, click **Reload** on See & Capture |
+Actions adapt to what you select:
+
+| State | Shown |
+|-------|--------|
+| No asset | Only the 3 global badges; asset variants hidden |
+| Image asset selected | Globals hidden; **Place sticker**, **Replace with your asset**, Green + asset, B&W + asset |
+| Palette selected | Globals hidden; **Apply palette**, Green + asset, B&W + asset |
+
+### Use page text (Context)
+
+Header checkbox **Use page text** (off by default). Hover/focus the ⓘ tip for details.
+
+- **Off:** only the cropped image is used  
+- **On:** page title + nearby words are sent as hidden hints for AI-backed steps  
+
+### Assets: Images | Palettes
+
+- **Images:** Add a PNG/JPEG, or **Save capture**; click a thumbnail to select  
+- **Palettes:** 4 built-in color sets (Warm Earth, Cool Ocean, Neon Night, Soft Pastel); click to select  
+
+### Variants with your assets
+
+| Variant | Needs | What it does |
+|---------|--------|----------------|
+| Place sticker | image | Pastes logo onto the capture (local, additive) |
+| Replace with your asset | image | AI subject swap via Eden — keeps the capture scene, replaces the main person/object with your asset |
+| Apply palette | palette | Recolors capture toward the 4 swatches (local) |
+| Green + asset | any | Asset blend, then green |
+| B&W + asset | any | Asset blend, then black & white |
+
+**Replace** needs `EDEN_AI_API_KEY`. It uses Eden v3 image edits (scene + asset), with a dual-panel v2 fallback if needed.
+
+## Regression checklist
+
+1. No asset → only 3 global badges; variants hidden  
+2. ⓘ tooltip explains page text; no long helper paragraph under the header  
+3. Select image → globals hidden; Place sticker + Replace + green/bw visible  
+4. Replace → right pane keeps scene, subject looks like asset (Eden key required)  
+5. Select palette → Apply palette + green/bw; Place sticker / Replace hidden  
+6. Place sticker still additive; Save folder still works  
 
 ## Project layout
 
-- `extension/` — Manifest V3, plain JavaScript (no build step)
-- `server/` — Express router + `providers/gemini.js` (Nano Banana)
-- `server/prompts.js` — full preset prompts (UI only shows labels)
+- `extension/` — MV3 plain JS (capture, modal, assets, palettes, variants, blend)
+- `server/` — Express + Eden / fal / Gemini / local providers

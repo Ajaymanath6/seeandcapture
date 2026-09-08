@@ -23,6 +23,13 @@ const PRESETS = {
     prompt:
       "Convert this exact image to black and white. Keep composition, subjects, and detail identical—only remove color.",
   },
+  "replace-with-asset": {
+    id: "replace-with-asset",
+    label: "Replace with your asset",
+    mode: "eden-replace-subject",
+    prompt:
+      "You are given two images. Image 1 is the SCENE (keep its background, camera angle, lighting, and composition). Image 2 is the REPLACEMENT SUBJECT (use this person's or object's identity). Replace ONLY the main subject/person/object in Image 1 with the subject from Image 2. Keep everything else in the scene the same. Do not invent a new location. Return one edited image.",
+  },
 };
 
 function getPreset(presetId) {

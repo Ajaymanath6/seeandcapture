@@ -11,6 +11,7 @@ const { editWithFal } = require("./providers/fal");
 const {
   editWithEden,
   removeBackgroundWithEden,
+  replaceSubjectWithEden,
 } = require("./providers/eden");
 const { editLocally } = require("./providers/localEdit");
 
@@ -56,6 +57,25 @@ function resolveModel(requested) {
   return preferredModel() || "eden";
 }
 
+function formatPageContext(pageContext) {
+  if (!pageContext || typeof pageContext !== "object") return "";
+  const title = String(pageContext.pageTitle || "").trim();
+  const meta = String(pageContext.metaDescription || "").trim();
+  const text = String(pageContext.surroundingText || "").trim();
+  if (!title && !meta && !text) return "";
+  const parts = [];
+  if (title) parts.push(`Page Title: ${title}`);
+  if (meta) parts.push(`Meta: ${meta}`);
+  if (text) parts.push(`Nearby text: ${text}`);
+  return `Context: [${parts.join(" | ")}]`;
+}
+
+function withContextPrompt(basePrompt, pageContext) {
+  const ctx = formatPageContext(pageContext);
+  if (!ctx) return basePrompt;
+  return `${ctx}\n${basePrompt}`;
+}
+
 app.use(
   cors({
     origin: true,
@@ -83,11 +103,21 @@ app.get("/api/presets", (_req, res) => {
 
 app.post("/api/edit", async (req, res) => {
   try {
-    const { imageDataUrl, presetId, model } = req.body || {};
+    const {
+      imageDataUrl,
+      presetId,
+      model,
+      pageContext,
+      assets,
+    } = req.body || {};
+
+    const assetCount = Array.isArray(assets) ? assets.length : 0;
+    const hasContext = Boolean(formatPageContext(pageContext));
+
     console.log(
       `[edit] preset=${presetId} model=${model || "(auto)"} imageBytes≈${
         typeof imageDataUrl === "string" ? imageDataUrl.length : 0
-      }`
+      } assets=${assetCount} context=${hasContext}`
     );
 
     if (!imageDataUrl || typeof imageDataUrl !== "string") {
@@ -105,10 +135,12 @@ app.post("/api/edit", async (req, res) => {
       return;
     }
 
+    // Client already sticker-composited when assets were selected.
+    // Empty pageContext/assets are ignored — same behavior as before.
     let resultDataUrl;
     let usedModel = resolveModel(model);
+    const promptWithContext = withContextPrompt(preset.prompt, pageContext);
 
-    // Preset mode wins: keeps the captured image instead of inventing a new scene.
     if (preset.mode === "local-green" || preset.mode === "local-grayscale") {
       resultDataUrl = await editLocally({
         imageDataUrl,
@@ -128,6 +160,31 @@ app.post("/api/edit", async (req, res) => {
         apiKey: process.env.EDEN_AI_API_KEY,
       });
       usedModel = "eden-bg-removal";
+    } else if (preset.mode === "eden-replace-subject") {
+      if (!hasEdenKey()) {
+        res.status(500).json({
+          error:
+            "EDEN_AI_API_KEY is missing. Add it to server/.env, then restart the server.",
+        });
+        return;
+      }
+      const assetUrl =
+        Array.isArray(assets) &&
+        assets.find((a) => a && (a.dataUrl || a.imageDataUrl));
+      const assetDataUrl = assetUrl?.dataUrl || assetUrl?.imageDataUrl;
+      if (!assetDataUrl) {
+        res.status(400).json({
+          error: "replace-with-asset requires a selected image asset dataUrl",
+        });
+        return;
+      }
+      resultDataUrl = await replaceSubjectWithEden({
+        sceneDataUrl: imageDataUrl,
+        assetDataUrl,
+        prompt: promptWithContext,
+        apiKey: process.env.EDEN_AI_API_KEY,
+      });
+      usedModel = "eden-replace-subject";
     } else if (usedModel === "eden") {
       if (!hasEdenKey()) {
         res.status(500).json({
@@ -138,7 +195,7 @@ app.post("/api/edit", async (req, res) => {
       }
       resultDataUrl = await editWithEden({
         imageDataUrl,
-        prompt: preset.prompt,
+        prompt: promptWithContext,
         apiKey: process.env.EDEN_AI_API_KEY,
       });
     } else if (usedModel === "fal") {
@@ -151,7 +208,7 @@ app.post("/api/edit", async (req, res) => {
       }
       resultDataUrl = await editWithFal({
         imageDataUrl,
-        prompt: preset.prompt,
+        prompt: promptWithContext,
         apiKey: process.env.FAL_KEY,
       });
     } else if (usedModel === "nano-banana") {
@@ -164,7 +221,7 @@ app.post("/api/edit", async (req, res) => {
       }
       resultDataUrl = await editWithNanoBanana({
         imageDataUrl,
-        prompt: preset.prompt,
+        prompt: promptWithContext,
         apiKey: process.env.GOOGLE_API_KEY,
       });
     } else {

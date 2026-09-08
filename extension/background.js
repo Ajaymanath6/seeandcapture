@@ -1,5 +1,11 @@
 const CONTEXT_MENU_ID = "see-and-capture-select";
-const CONTENT_FILES = ["presets.js", "content.js"];
+const CONTENT_FILES = [
+  "presets.js",
+  "assets-db.js",
+  "blend.js",
+  "payload.js",
+  "content.js",
+];
 const API_URL = "http://127.0.0.1:8787/api/edit";
 
 chrome.runtime.onInstalled.addListener(() => {
@@ -62,15 +68,37 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
-async function editImageViaServer({ imageDataUrl, presetId, model }) {
+async function editImageViaServer(message) {
+  const isReplace = message.presetId === "replace-with-asset";
+  const body = {
+    imageDataUrl: message.imageDataUrl,
+    presetId: message.presetId,
+    model: message.model || "eden",
+    prompt: message.prompt || "",
+    pageContext: message.pageContext || {},
+    assets: Array.isArray(message.assets)
+      ? message.assets.map((a) =>
+          isReplace
+            ? {
+                id: a.id,
+                name: a.name,
+                kind: a.kind,
+                dataUrl: a.dataUrl || null,
+              }
+            : {
+                id: a.id,
+                name: a.name,
+                kind: a.kind,
+                hasImage: Boolean(a.dataUrl),
+              }
+        )
+      : [],
+  };
+
   const response = await fetch(API_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      imageDataUrl,
-      presetId,
-      model: model || "eden",
-    }),
+    body: JSON.stringify(body),
   });
 
   const data = await response.json().catch(() => ({}));
