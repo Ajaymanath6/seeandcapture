@@ -339,9 +339,25 @@
       if (typeof headerBackHandler === "function") headerBackHandler();
     });
 
-    const title = document.createElement("h2");
-    title.className = "sc-title";
-    title.textContent = "See & Capture";
+    const brand = document.createElement("div");
+    brand.className = "sc-header-brand";
+    brand.setAttribute("aria-label", "See and Capture");
+
+    const logo = document.createElement("img");
+    logo.className = "sc-header-logo";
+    logo.src = chrome.runtime.getURL("icons/logo.png");
+    logo.alt = "";
+    logo.draggable = false;
+
+    const wordmark = document.createElement("span");
+    wordmark.className = "sc-header-wordmark";
+    wordmark.appendChild(document.createTextNode("See and "));
+    const captureEm = document.createElement("em");
+    captureEm.textContent = "Capture";
+    wordmark.appendChild(captureEm);
+
+    brand.appendChild(logo);
+    brand.appendChild(wordmark);
 
     const saveWrap = document.createElement("div");
     saveWrap.className = "sc-save-wrap";
@@ -474,7 +490,7 @@
     closeBtn.addEventListener("click", () => teardownHost());
 
     header.appendChild(headerBack);
-    header.appendChild(title);
+    header.appendChild(brand);
     header.appendChild(headerActions);
     header.appendChild(closeBtn);
 

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "See & Capture",
-  "version": "1.5.5",
+  "version": "1.6.1",
   "description": "Capture a region, prompt-edit with assets, save to folder or moodboards.",
   "permissions": [
     "activeTab",
@@ -18,17 +18,17 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "See & Capture — select area",
+    "default_title": "See and Capture \u2014 select area",
     "default_icon": {
-      "16": "icons/icon16.png",
-      "48": "icons/icon48.png",
-      "128": "icons/icon128.png"
+      "16": "icons/logo.png",
+      "48": "icons/logo.png",
+      "128": "icons/logo.png"
     }
   },
   "icons": {
-    "16": "icons/icon16.png",
-    "48": "icons/icon48.png",
-    "128": "icons/icon128.png"
+    "16": "icons/logo.png",
+    "48": "icons/logo.png",
+    "128": "icons/logo.png"
   },
   "web_accessible_resources": [
     {
@@ -40,9 +40,12 @@
         "moodboard-ui.js",
         "blend.js",
         "payload.js",
-        "preview-edit.js"
+        "preview-edit.js",
+        "icons/logo.png"
       ],
-      "matches": ["<all_urls>"]
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ]
 }
