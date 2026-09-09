@@ -1,12 +1,12 @@
 # See & Capture
 
-Chrome extension + local server: drag-select a region, then apply presets (green / remove background / black & white). Optional **page text**, **image assets**, and **color palettes** enrich the flow without changing the default path when those features are off.
+Chrome extension + local server: drag-select a region, describe an edit in a prompt, optionally attach image or color/brand assets, then Preview or Edit the result.
 
 ## What you need
 
 - Google Chrome
 - Node.js 20+ **or** Docker
-- At least one API key (Eden recommended for remove-bg)
+- At least one API key (Eden recommended)
 
 ## 1. Add your API key
 
@@ -20,6 +20,12 @@ Open `server/.env` and set at least one:
 EDEN_AI_API_KEY=paste_your_eden_key_here
 FAL_KEY=paste_your_fal_key_here
 GOOGLE_API_KEY=paste_your_google_key_here
+```
+
+For subject-quality edits, prefer:
+
+```
+EDEN_AI_MODEL=openai/gpt-image-1.5
 ```
 
 ## 2. Start the local server
@@ -36,53 +42,40 @@ cd server && npm install && npm start
 
 1. Toolbar or right-click → **See & Capture — select area**
 2. Drag a rectangle
-3. With **no asset selected**, use the **3 global badges** at the bottom (Change to green / Remove background / Black and white)
-4. Optional: **Select folder to save**
+3. Write a prompt under the two panes → **Apply** (edits the result, or the capture if there is no result yet)
+4. Optional: **Add assets** → **Images** or **Color / Brand**, then Apply again
+5. Hover the result → **Preview** (image only) or **Edit** (Figma-style tools)
+6. Optional: **Select folder to save**
 
-### Discover-on-action
+### Header
 
-Actions adapt to what you select:
+Order: title → **Select folder to save** → **⋮** (Use page text) → close. Glass-style border around the modal. UI uses Material Symbols icons throughout.
 
-| State | Shown |
-|-------|--------|
-| No asset | Only the 3 global badges; asset variants hidden |
-| Image asset selected | Globals hidden; **Place sticker**, **Replace with your asset**, Green + asset, B&W + asset |
-| Palette selected | Globals hidden; **Apply palette**, Green + asset, B&W + asset |
+### Prompt composer
 
-### Use page text (Context)
+- Text field under Capture | Result
+- **Add assets** dropdown: **Images** (pick / add PNG-JPEG) and **Color / Brand** (built-in palettes)
+- **Apply** / Enter → Eden `custom-prompt` on the working image; selected assets are blended first when present
 
-Header checkbox **Use page text** (off by default). Hover/focus the ⓘ tip for details.
+### Preview vs Edit (~70% viewport)
 
-- **Off:** only the cropped image is used  
-- **On:** page title + nearby words are sent as hidden hints for AI-backed steps  
+| Button | Window |
+|--------|--------|
+| Preview | Large image only |
+| Edit | Same size + dark toolbar: Crop, Select area (Erase / Isolate), Remove background, Edit with prompt; **More** disabled |
 
-### Assets: Images | Palettes
-
-- **Images:** Add a PNG/JPEG, or **Save capture**; click a thumbnail to select  
-- **Palettes:** 4 built-in color sets (Warm Earth, Cool Ocean, Neon Night, Soft Pastel); click to select  
-
-### Variants with your assets
-
-| Variant | Needs | What it does |
-|---------|--------|----------------|
-| Place sticker | image | Pastes logo onto the capture (local, additive) |
-| Replace with your asset | image | AI subject swap via Eden — keeps the capture scene, replaces the main person/object with your asset |
-| Apply palette | palette | Recolors capture toward the 4 swatches (local) |
-| Green + asset | any | Asset blend, then green |
-| B&W + asset | any | Asset blend, then black & white |
-
-**Replace** needs `EDEN_AI_API_KEY`. It uses Eden v3 image edits (scene + asset), with a dual-panel v2 fallback if needed.
+The Figma toolbar is **not** shown under the small right pane in the main modal.
 
 ## Regression checklist
 
-1. No asset → only 3 global badges; variants hidden  
-2. ⓘ tooltip explains page text; no long helper paragraph under the header  
-3. Select image → globals hidden; Place sticker + Replace + green/bw visible  
-4. Replace → right pane keeps scene, subject looks like asset (Eden key required)  
-5. Select palette → Apply palette + green/bw; Place sticker / Replace hidden  
-6. Place sticker still additive; Save folder still works  
+1. No footer badges and no variants strip under the modal  
+2. ⋮ toggles Use page text  
+3. Prompt + Apply updates the right pane  
+4. Add assets Images / Color/Brand selection works  
+5. Preview = image only; Edit = toolbar; both ~70% viewport  
+6. Save downloads the latest result  
 
 ## Project layout
 
-- `extension/` — MV3 plain JS (capture, modal, assets, palettes, variants, blend)
+- `extension/` — MV3 plain JS (capture, modal, assets, blend, preview-edit)
 - `server/` — Express + Eden / fal / Gemini / local providers

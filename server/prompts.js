@@ -30,6 +30,12 @@ const PRESETS = {
     prompt:
       "You are given two images. Image 1 is the SCENE (keep its background, camera angle, lighting, and composition). Image 2 is the REPLACEMENT SUBJECT (use this person's or object's identity). Replace ONLY the main subject/person/object in Image 1 with the subject from Image 2. Keep everything else in the scene the same. Do not invent a new location. Return one edited image.",
   },
+  "custom-prompt": {
+    id: "custom-prompt",
+    label: "Edit with prompt",
+    mode: "eden-custom-prompt",
+    prompt: `${PRESERVE} Apply only the user's requested edit described below.`,
+  },
 };
 
 function getPreset(presetId) {

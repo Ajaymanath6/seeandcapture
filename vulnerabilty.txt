@@ -1,0 +1,14 @@
+# Vulnerability / secrets scan (See & Capture)
+
+## Findings
+
+1. **server/.env** — contains `EDEN_AI_API_KEY` (and possibly other provider keys).
+   - Risk: secret leakage if committed or shared.
+   - Mitigation: keep `.env` gitignored; use `.env.example` with placeholders only; rotate keys if exposed.
+
+2. **server/.env.example** — should contain placeholders only (no real keys).
+
+## Notes
+
+- Extension code uses IndexedDB for moodboards/assets (no API secrets in extension storage).
+- Local edit API is bound to localhost:8787.

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "See & Capture",
-  "version": "1.2.0",
-  "description": "Capture, presets, image/palette assets, and page-text context.",
+  "version": "1.5.5",
+  "description": "Capture a region, prompt-edit with assets, save to folder or moodboards.",
   "permissions": [
     "activeTab",
     "tabs",
@@ -36,8 +36,11 @@
         "content.css",
         "presets.js",
         "assets-db.js",
+        "moodboard-db.js",
+        "moodboard-ui.js",
         "blend.js",
-        "payload.js"
+        "payload.js",
+        "preview-edit.js"
       ],
       "matches": ["<all_urls>"]
     }

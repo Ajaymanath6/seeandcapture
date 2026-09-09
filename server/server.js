@@ -109,10 +109,13 @@ app.post("/api/edit", async (req, res) => {
       model,
       pageContext,
       assets,
+      prompt: userPromptRaw,
     } = req.body || {};
 
     const assetCount = Array.isArray(assets) ? assets.length : 0;
     const hasContext = Boolean(formatPageContext(pageContext));
+    const userPrompt =
+      typeof userPromptRaw === "string" ? userPromptRaw.trim() : "";
 
     console.log(
       `[edit] preset=${presetId} model=${model || "(auto)"} imageBytes≈${
@@ -139,7 +142,17 @@ app.post("/api/edit", async (req, res) => {
     // Empty pageContext/assets are ignored — same behavior as before.
     let resultDataUrl;
     let usedModel = resolveModel(model);
-    const promptWithContext = withContextPrompt(preset.prompt, pageContext);
+    let basePrompt = preset.prompt;
+    if (preset.mode === "eden-custom-prompt") {
+      if (!userPrompt) {
+        res.status(400).json({
+          error: "custom-prompt requires a prompt string",
+        });
+        return;
+      }
+      basePrompt = `${preset.prompt}\nUser request: ${userPrompt}`;
+    }
+    const promptWithContext = withContextPrompt(basePrompt, pageContext);
 
     if (preset.mode === "local-green" || preset.mode === "local-grayscale") {
       resultDataUrl = await editLocally({
@@ -185,7 +198,10 @@ app.post("/api/edit", async (req, res) => {
         apiKey: process.env.EDEN_AI_API_KEY,
       });
       usedModel = "eden-replace-subject";
-    } else if (usedModel === "eden") {
+    } else if (
+      preset.mode === "eden-custom-prompt" ||
+      usedModel === "eden"
+    ) {
       if (!hasEdenKey()) {
         res.status(500).json({
           error:
@@ -198,6 +214,9 @@ app.post("/api/edit", async (req, res) => {
         prompt: promptWithContext,
         apiKey: process.env.EDEN_AI_API_KEY,
       });
+      if (preset.mode === "eden-custom-prompt") {
+        usedModel = "eden-custom-prompt";
+      }
     } else if (usedModel === "fal") {
       if (!hasFalKey()) {
         res.status(500).json({

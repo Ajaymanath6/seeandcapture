@@ -2,8 +2,11 @@ const CONTEXT_MENU_ID = "see-and-capture-select";
 const CONTENT_FILES = [
   "presets.js",
   "assets-db.js",
+  "moodboard-db.js",
+  "moodboard-ui.js",
   "blend.js",
   "payload.js",
+  "preview-edit.js",
   "content.js",
 ];
 const API_URL = "http://127.0.0.1:8787/api/edit";
