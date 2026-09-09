@@ -62,6 +62,14 @@
       link.rel = "stylesheet";
       link.href = chrome.runtime.getURL("content.css");
       shadowRoot.appendChild(link);
+      if (!document.getElementById("see-and-capture-lora")) {
+        const fontLink = document.createElement("link");
+        fontLink.id = "see-and-capture-lora";
+        fontLink.rel = "stylesheet";
+        fontLink.href =
+          "https://fonts.googleapis.com/css2?family=Lora:ital,wght@0,500;0,600;0,650;1,600&display=swap";
+        document.documentElement.appendChild(fontLink);
+      }
     }
     activeHost = host;
   }
@@ -351,7 +359,11 @@
 
     const wordmark = document.createElement("span");
     wordmark.className = "sc-header-wordmark";
-    wordmark.appendChild(document.createTextNode("See and "));
+    const seePart = document.createElement("span");
+    seePart.className = "sc-header-wordmark-see";
+    seePart.textContent = "See";
+    wordmark.appendChild(seePart);
+    wordmark.appendChild(document.createTextNode(" and "));
     const captureEm = document.createElement("em");
     captureEm.textContent = "Capture";
     wordmark.appendChild(captureEm);
