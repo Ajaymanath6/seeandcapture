@@ -6,15 +6,19 @@ const dotenv = require("dotenv");
 dotenv.config({ path: path.join(__dirname, ".env") });
 
 const { getPreset, listPresetMeta } = require("./prompts");
-const { editWithNanoBanana } = require("./providers/gemini");
+const { editWithNanoBanana, describeImagePrompt, DESCRIBE_PROMPT_INSTRUCTION } = require("./providers/gemini");
 const { editWithFal } = require("./providers/fal");
 const { editWithFluxApi } = require("./providers/fluxapi");
 const {
   editWithEden,
   removeBackgroundWithEden,
   replaceSubjectWithEden,
+  describeImagePromptWithEden,
 } = require("./providers/eden");
+const { describeImagePromptWithOpenRouter } = require("./providers/openrouter");
 const { editLocally } = require("./providers/localEdit");
+const { downscaleImageDataUrl } = require("./lib/downscaleImage");
+const { assertPromptQuality } = require("./lib/promptQuality");
 
 const PORT = Number(process.env.PORT) || 8787;
 const HOST = process.env.HOST || "127.0.0.1";
@@ -44,6 +48,13 @@ function hasFluxKey() {
   return Boolean(
     process.env.FLUXAPI_API_KEY &&
       process.env.FLUXAPI_API_KEY !== "your_fluxapi_key_goes_here"
+  );
+}
+
+function hasOpenRouterKey() {
+  return Boolean(
+    process.env.OPENROUTER_API_KEY &&
+      process.env.OPENROUTER_API_KEY !== "your_openrouter_key_goes_here"
   );
 }
 
@@ -103,12 +114,100 @@ app.get("/health", (_req, res) => {
     hasGoogleKey: hasGoogleKey(),
     hasFalKey: hasFalKey(),
     hasEdenKey: hasEdenKey(),
+    hasOpenRouterKey: hasOpenRouterKey(),
     preferredModel: preferredModel(),
   });
 });
 
 app.get("/api/presets", (_req, res) => {
   res.json({ presets: listPresetMeta() });
+});
+
+app.post("/api/get-prompt", async (req, res) => {
+  try {
+    const { imageDataUrl } = req.body || {};
+    if (!imageDataUrl || typeof imageDataUrl !== "string") {
+      res.status(400).json({ error: "imageDataUrl is required" });
+      return;
+    }
+    if (!hasGoogleKey() && !hasOpenRouterKey() && !hasEdenKey()) {
+      res.status(500).json({
+        error:
+          "No vision provider configured. Set GOOGLE_API_KEY, OPENROUTER_API_KEY (free), or EDEN_AI_API_KEY in server/.env, then restart.",
+      });
+      return;
+    }
+
+    const scaled = downscaleImageDataUrl(imageDataUrl);
+    console.log(
+      `[get-prompt] imageBytes≈${imageDataUrl.length} scaledBytes≈${scaled.length}`
+    );
+
+    const errors = [];
+
+    async function tryProvider(label, modelId, runner) {
+      try {
+        const raw = await runner();
+        const text = typeof raw === "string" ? raw : raw?.prompt;
+        const usedModel =
+          typeof raw === "object" && raw?.model ? raw.model : modelId;
+        const checked = assertPromptQuality(text);
+        if (!checked.ok) {
+          throw new Error(checked.reason);
+        }
+        console.log(`[get-prompt] ok via ${label} (${usedModel})`);
+        res.json({ prompt: checked.prompt, model: usedModel });
+        return true;
+      } catch (err) {
+        console.warn(`[get-prompt] ${label} failed:`, err?.message || err);
+        errors.push(`${label}: ${err?.message || String(err)}`);
+        return false;
+      }
+    }
+
+    if (hasGoogleKey()) {
+      const ok = await tryProvider("Gemini", "gemini-2.5-flash", () =>
+        describeImagePrompt({
+          imageDataUrl: scaled,
+          apiKey: process.env.GOOGLE_API_KEY,
+        })
+      );
+      if (ok) return;
+    }
+
+    if (hasOpenRouterKey()) {
+      const ok = await tryProvider("OpenRouter", "openrouter", () =>
+        describeImagePromptWithOpenRouter({
+          imageDataUrl: scaled,
+          apiKey: process.env.OPENROUTER_API_KEY,
+          instruction: DESCRIBE_PROMPT_INSTRUCTION,
+        })
+      );
+      if (ok) return;
+    }
+
+    if (hasEdenKey()) {
+      const ok = await tryProvider("Eden", "eden-vision", () =>
+        describeImagePromptWithEden({
+          imageDataUrl: scaled,
+          apiKey: process.env.EDEN_AI_API_KEY,
+          instruction: DESCRIBE_PROMPT_INSTRUCTION,
+        })
+      );
+      if (ok) return;
+    }
+
+    res.status(502).json({
+      error:
+        errors.join(" | ") ||
+        "Could not generate a usable recreate prompt. Check GOOGLE_API_KEY or add a free OPENROUTER_API_KEY.",
+    });
+  } catch (err) {
+    console.error("POST /api/get-prompt failed:", err);
+    res.status(502).json({
+      error: err?.message || "Could not generate prompt",
+    });
+  }
 });
 
 app.post("/api/edit", async (req, res) => {

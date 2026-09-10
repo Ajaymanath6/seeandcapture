@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "See & Capture",
-  "version": "1.7.4",
+  "version": "1.7.7",
   "description": "Capture a region, prompt-edit with assets, save to folder or moodboards.",
   "permissions": [
     "activeTab",

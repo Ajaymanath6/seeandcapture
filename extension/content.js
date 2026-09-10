@@ -18,6 +18,7 @@
   let selectedAssetIds = [];
   let leftWrapRef = null;
   let rightWrapRef = null;
+  let rightLabelRef = null;
   let selectedPane = "capture";
   let modalRef = null;
   let bodyRef = null;
@@ -200,6 +201,7 @@
     selectedAssetMeta = {};
     leftWrapRef = null;
     rightWrapRef = null;
+    rightLabelRef = null;
     selectedPane = "capture";
     modalRef = null;
     bodyRef = null;
@@ -648,7 +650,8 @@
     right.className = "sc-pane";
     const rightLabel = document.createElement("p");
     rightLabel.className = "sc-pane-label";
-    rightLabel.textContent = "Result";
+    rightLabel.textContent = "Generation";
+    rightLabelRef = rightLabel;
     const rightWrap = document.createElement("div");
     rightWrap.className = "sc-image-wrap is-result";
     rightWrap.tabIndex = 0;
@@ -732,6 +735,7 @@
     const quickDefs = [
       { id: "black-white", label: "Black and white" },
       { id: "remove-bg", label: "Remove background" },
+      { id: "get-prompt", label: "Get the prompt" },
     ];
     quickDefs.forEach((def) => {
       const btn = document.createElement("button");
@@ -739,7 +743,10 @@
       btn.className = "sc-quick-btn";
       btn.dataset.presetId = def.id;
       btn.textContent = def.label;
-      btn.addEventListener("click", () => runQuickPreset(def.id, rightWrap));
+      btn.addEventListener("click", () => {
+        if (def.id === "get-prompt") runGetPrompt(rightWrap);
+        else runQuickPreset(def.id, rightWrap);
+      });
       quick.appendChild(btn);
     });
 
@@ -1093,6 +1100,7 @@
     buttons.forEach((b) => {
       b.disabled = true;
     });
+    setRightPaneLabel("Generation");
     showWorking(rightWrap);
     try {
       const data = await requestEdit(presetId, {
@@ -1119,6 +1127,40 @@
         b.disabled = false;
       });
     }
+  }
+
+  async function runGetPrompt(rightWrap) {
+    if (inFlight || !croppedDataUrl) return;
+    inFlight = true;
+    if (applyBtnRef) applyBtnRef.disabled = true;
+    const buttons = shadowRoot
+      ? [...shadowRoot.querySelectorAll(".sc-quick-btn")]
+      : [];
+    buttons.forEach((b) => {
+      b.disabled = true;
+    });
+    setRightPaneLabel("Prompt");
+    showWorking(rightWrap, "Writing prompt…");
+    try {
+      const result = await requestGetPrompt(croppedDataUrl);
+      showPromptResult(rightWrap, result.prompt, result.model);
+    } catch (err) {
+      showError(
+        rightWrap,
+        err?.message ||
+          "Could not get prompt. Is the local server running on port 8787?"
+      );
+    } finally {
+      inFlight = false;
+      if (applyBtnRef) applyBtnRef.disabled = false;
+      buttons.forEach((b) => {
+        b.disabled = false;
+      });
+    }
+  }
+
+  function setRightPaneLabel(text) {
+    if (rightLabelRef) rightLabelRef.textContent = text;
   }
 
   function updateAssetCountLabel() {
@@ -1154,6 +1196,7 @@
     }
     inFlight = true;
     if (applyBtnRef) applyBtnRef.disabled = true;
+    setRightPaneLabel("Generation");
     showWorking(rightWrap);
     try {
       const data = await requestEdit("custom-prompt", {
@@ -1607,14 +1650,62 @@
   }
 
   function showResult(resultWrap, dataUrl) {
+    setRightPaneLabel("Generation");
     resultWrap.innerHTML = "";
+    resultWrap.classList.remove("is-prompt");
     resultWrap.classList.add("is-result");
     const img = document.createElement("img");
-    img.alt = "Generated result";
+    img.alt = "Generated image";
     img.src = dataUrl;
     resultWrap.appendChild(img);
     attachImageActions(resultWrap, "result");
     resultDataUrl = dataUrl;
+    setSelectedPane("result");
+  }
+
+  function showPromptResult(resultWrap, promptText, modelId) {
+    setRightPaneLabel("Prompt");
+    resultWrap.innerHTML = "";
+    resultWrap.classList.add("is-result", "is-prompt");
+    const pane = document.createElement("div");
+    pane.className = "sc-prompt-pane";
+    const toolbar = document.createElement("div");
+    toolbar.className = "sc-prompt-pane-toolbar";
+    if (modelId) {
+      const modelHint = document.createElement("span");
+      modelHint.className = "sc-prompt-model-hint";
+      modelHint.textContent = String(modelId);
+      modelHint.title = `Generated via ${modelId}`;
+      toolbar.appendChild(modelHint);
+    }
+    const copyBtn = document.createElement("button");
+    copyBtn.type = "button";
+    copyBtn.className = "sc-prompt-copy-btn";
+    copyBtn.textContent = "Copy";
+    const area = document.createElement("textarea");
+    area.className = "sc-prompt-output";
+    area.value = String(promptText || "").trim();
+    area.setAttribute("aria-label", "Generated recreate prompt");
+    copyBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const text = area.value;
+      try {
+        await navigator.clipboard.writeText(text);
+        copyBtn.textContent = "Copied";
+        setTimeout(() => {
+          copyBtn.textContent = "Copy";
+        }, 1200);
+      } catch (_err) {
+        area.focus();
+        area.select();
+        alert("Could not copy automatically — select and copy manually.");
+      }
+    });
+    toolbar.appendChild(copyBtn);
+    pane.appendChild(toolbar);
+    pane.appendChild(area);
+    pane.addEventListener("click", (e) => e.stopPropagation());
+    resultWrap.appendChild(pane);
     setSelectedPane("result");
   }
 
@@ -1715,7 +1806,7 @@
             syncResultImage(url);
           }
         },
-        editTargetLabel: target === "capture" ? "Capture" : "Result",
+        editTargetLabel: target === "capture" ? "Capture" : "Generation",
         requestEdit: (presetId, editOpts) => requestEdit(presetId, editOpts),
         saveDataUrl: (url) => saveImageToComputer(null, url),
       });
@@ -1763,20 +1854,49 @@
     });
   }
 
-  function showWorking(resultWrap) {
+  function showWorking(resultWrap, statusText) {
     resultWrap.innerHTML = "";
+    resultWrap.classList.remove("is-prompt");
     const status = document.createElement("div");
     status.className = "sc-status";
-    status.innerHTML = '<div class="sc-spinner"></div>Working…';
+    const spinner = document.createElement("div");
+    spinner.className = "sc-spinner";
+    const label = document.createElement("span");
+    label.textContent = statusText || "Working…";
+    status.appendChild(spinner);
+    status.appendChild(label);
     resultWrap.appendChild(status);
   }
 
   function showError(resultWrap, message) {
     resultWrap.innerHTML = "";
+    resultWrap.classList.remove("is-prompt");
     const statusErr = document.createElement("div");
     statusErr.className = "sc-status is-error";
     statusErr.textContent = message;
     resultWrap.appendChild(statusErr);
+  }
+
+  async function requestGetPrompt(imageDataUrl) {
+    let response;
+    try {
+      response = await fetch("http://127.0.0.1:8787/api/get-prompt", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageDataUrl }),
+      });
+    } catch (_err) {
+      throw new Error(
+        "Could not reach local server on port 8787. Start it and try again."
+      );
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.prompt) {
+      throw new Error(
+        data.error || `Get prompt failed (${response.status})`
+      );
+    }
+    return { prompt: data.prompt, model: data.model || null };
   }
 
   async function requestEdit(presetId, opts) {

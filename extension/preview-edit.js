@@ -54,7 +54,7 @@
       saveDataUrl,
       editTargetLabel,
     } = opts;
-    const paneLabel = editTargetLabel || "Result";
+    const paneLabel = editTargetLabel || "Generation";
 
     toolbarHost.innerHTML = "";
     toolbarHost.classList.add("sc-preview-chrome");

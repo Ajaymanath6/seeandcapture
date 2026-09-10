@@ -2,10 +2,12 @@ const EDEN_V2_GENERATION_URL = "https://api.edenai.run/v2/image/generation";
 const EDEN_V2_BG_REMOVAL_URL =
   "https://api.edenai.run/v2/image/background_removal";
 const EDEN_V3_EDITS_URL = "https://api.edenai.run/v3/images/edits";
+const EDEN_V3_CHAT_URL = "https://api.edenai.run/v3/chat/completions";
 const DEFAULT_PROVIDERS = "openai";
 const DEFAULT_BG_PROVIDERS = "api4ai";
 const DEFAULT_RESOLUTION = "1024x1024";
 const DEFAULT_EDIT_MODEL = "openai/gpt-image-1.5";
+const DEFAULT_VISION_MODEL = "openai/gpt-4o-mini";
 const MIN_VALID_IMAGE_BYTES = 2000;
 
 const { PNG } = require("pngjs");
@@ -364,11 +366,85 @@ async function urlToDataUrl(url) {
   return `data:${mime};base64,${buffer.toString("base64")}`;
 }
 
+/**
+ * Vision→text via Eden OpenAI-compatible chat completions.
+ * @param {{ imageDataUrl: string, apiKey: string, instruction: string, model?: string }} args
+ * @returns {Promise<string>}
+ */
+async function describeImagePromptWithEden({
+  imageDataUrl,
+  apiKey,
+  instruction,
+  model,
+}) {
+  if (!apiKey) {
+    throw new Error("EDEN_AI_API_KEY is not set");
+  }
+  if (!imageDataUrl || typeof imageDataUrl !== "string") {
+    throw new Error("Invalid imageDataUrl");
+  }
+  const text =
+    typeof instruction === "string" && instruction.trim()
+      ? instruction.trim()
+      : "Describe this image as a detailed image-generation prompt. Output only the prompt.";
+  const selectedModel =
+    model || process.env.EDEN_AI_VISION_MODEL || DEFAULT_VISION_MODEL;
+
+  const response = await fetch(EDEN_V3_CHAT_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: selectedModel,
+      temperature: 0.4,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text },
+            {
+              type: "image_url",
+              image_url: { url: ensureDataUrl(imageDataUrl) },
+            },
+          ],
+        },
+      ],
+    }),
+  });
+
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(extractError(payload, response.status));
+  }
+
+  const content = payload?.choices?.[0]?.message?.content;
+  const prompt =
+    typeof content === "string"
+      ? content.trim()
+      : Array.isArray(content)
+        ? content
+            .map((part) => (typeof part === "string" ? part : part?.text || ""))
+            .join(" ")
+            .trim()
+        : "";
+  if (!prompt) {
+    throw new Error(
+      extractError(payload, response.status) ||
+        "Eden AI response did not include prompt text"
+    );
+  }
+  return prompt;
+}
+
 module.exports = {
   EDEN_V2_GENERATION_URL,
   EDEN_V2_BG_REMOVAL_URL,
   EDEN_V3_EDITS_URL,
+  EDEN_V3_CHAT_URL,
   editWithEden,
   removeBackgroundWithEden,
   replaceSubjectWithEden,
+  describeImagePromptWithEden,
 };
