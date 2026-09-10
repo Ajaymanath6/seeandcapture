@@ -1,8 +1,10 @@
 importScripts("moodboard-store.js");
 
-const CONTEXT_MENU_ROOT = "see-and-capture-root";
+const CONTEXT_MENU_ROOT = "see-and-capture-moodboard-root";
 const CONTEXT_MENU_SELECT = "see-and-capture-select";
 const RECEIVE_MENU_PREFIX = "sc-mb-receive-";
+const MENU_TITLE_CAPTURE = "See && Capture";
+const MENU_TITLE_MOODBOARD = "Add to moodboard";
 const CONTENT_FILES = [
   "presets.js",
   "assets-db.js",
@@ -216,26 +218,20 @@ async function rebuildContextMenus() {
     ? data.moodboardReceivers
     : [];
 
-  if (!receivers.length) {
-    chrome.contextMenus.create({
-      id: CONTEXT_MENU_SELECT,
-      title: "See & Capture",
-      contexts: pageContexts,
-    });
-    return;
-  }
-
+  // Always a direct click — capture (no submenu).
   chrome.contextMenus.create({
-    id: CONTEXT_MENU_ROOT,
-    title: "See & Capture",
+    id: CONTEXT_MENU_SELECT,
+    title: MENU_TITLE_CAPTURE,
     contexts: pageContexts,
   });
 
+  // Moodboard submenu only when receive boards exist (image context).
+  if (!receivers.length) return;
+
   chrome.contextMenus.create({
-    id: CONTEXT_MENU_SELECT,
-    parentId: CONTEXT_MENU_ROOT,
-    title: "Select area",
-    contexts: pageContexts,
+    id: CONTEXT_MENU_ROOT,
+    title: MENU_TITLE_MOODBOARD,
+    contexts: ["image"],
   });
 
   receivers.forEach((board) => {
