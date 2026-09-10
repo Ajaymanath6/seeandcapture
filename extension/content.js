@@ -28,11 +28,47 @@
   let headerBackHandler = null;
   let promptInputRef = null;
   let applyBtnRef = null;
+  let selectedAspectRatio = "original";
   let assetCountEl = null;
   let assetBadgesEl = null;
   let assetsPanelEl = null;
   let moodboardViewerApi = null;
   let selectedAssetMeta = {};
+  let workflowMode = "all";
+  let allWorkspaceRef = null;
+  let mashupWorkspaceRef = null;
+  let workflowPopRef = null;
+  let workflowLabelRef = null;
+  let mashupSubjectPreviewRef = null;
+  let mashupStylePreviewRef = null;
+  let mashupResultWrapRef = null;
+  let mashupPromptRef = null;
+  let mashupGenerateBtnRef = null;
+  let mashupMemory = {
+    subjectDataUrl: null,
+    styleDataUrl: null,
+    resultDataUrl: null,
+    pendingSlot: null,
+  };
+  let textRemixWorkspaceRef = null;
+  let visualLocalizerWorkspaceRef = null;
+  let textRemixMemory = {
+    captureDataUrl: null,
+    texts: [],
+    resultDataUrl: null,
+    pendingCapture: false,
+  };
+  let visualLocalizerMemory = {
+    captureDataUrl: null,
+    texts: [],
+    languages: ["es"],
+    style: "literal",
+    drafts: {},
+    results: {},
+    pendingCapture: false,
+  };
+  let textRemixUi = {};
+  let visualLocalizerUi = {};
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (message?.type === "SC_PING") {
@@ -145,6 +181,152 @@
     }
   }
 
+  async function loadMashupMemory() {
+    try {
+      const data = await chrome.storage.local.get({ mashupState: null });
+      const raw = data.mashupState || {};
+      mashupMemory = {
+        subjectDataUrl: raw.subjectDataUrl || null,
+        styleDataUrl: raw.styleDataUrl || null,
+        resultDataUrl: raw.resultDataUrl || null,
+        pendingSlot:
+          raw.pendingSlot === "subject" || raw.pendingSlot === "style"
+            ? raw.pendingSlot
+            : null,
+      };
+    } catch (err) {
+      console.error(err);
+    }
+    return mashupMemory;
+  }
+
+  async function saveMashupMemory(patch) {
+    mashupMemory = { ...mashupMemory, ...(patch || {}) };
+    try {
+      await chrome.storage.local.set({ mashupState: mashupMemory });
+    } catch (err) {
+      console.error(err);
+    }
+    return mashupMemory;
+  }
+
+  async function consumeMashupPendingSlot(dataUrl) {
+    await loadMashupMemory();
+    const slot = mashupMemory.pendingSlot;
+    if (slot !== "subject" && slot !== "style") return false;
+    const patch =
+      slot === "subject"
+        ? { subjectDataUrl: dataUrl, pendingSlot: null }
+        : { styleDataUrl: dataUrl, pendingSlot: null };
+    await saveMashupMemory(patch);
+    return true;
+  }
+
+  async function startMashupSlotCapture(slot) {
+    if (inFlight || capturing) return;
+    await saveMashupMemory({ pendingSlot: slot });
+    teardownHost();
+    beginCapture();
+  }
+
+  async function loadTextRemixMemory() {
+    try {
+      const data = await chrome.storage.local.get({ textRemixState: null });
+      const raw = data.textRemixState || {};
+      textRemixMemory = {
+        captureDataUrl: raw.captureDataUrl || null,
+        texts: Array.isArray(raw.texts) ? raw.texts : [],
+        resultDataUrl: raw.resultDataUrl || null,
+        pendingCapture: Boolean(raw.pendingCapture),
+      };
+    } catch (err) {
+      console.error(err);
+    }
+    return textRemixMemory;
+  }
+
+  async function saveTextRemixMemory(patch) {
+    textRemixMemory = { ...textRemixMemory, ...(patch || {}) };
+    try {
+      await chrome.storage.local.set({ textRemixState: textRemixMemory });
+    } catch (err) {
+      console.error(err);
+    }
+    return textRemixMemory;
+  }
+
+  async function loadVisualLocalizerMemory() {
+    try {
+      const data = await chrome.storage.local.get({
+        visualLocalizerState: null,
+      });
+      const raw = data.visualLocalizerState || {};
+      visualLocalizerMemory = {
+        captureDataUrl: raw.captureDataUrl || null,
+        texts: Array.isArray(raw.texts) ? raw.texts : [],
+        languages: Array.isArray(raw.languages) && raw.languages.length
+          ? raw.languages
+          : ["es"],
+        style: raw.style === "marketing" ? "marketing" : "literal",
+        drafts: raw.drafts && typeof raw.drafts === "object" ? raw.drafts : {},
+        results:
+          raw.results && typeof raw.results === "object" ? raw.results : {},
+        pendingCapture: Boolean(raw.pendingCapture),
+      };
+    } catch (err) {
+      console.error(err);
+    }
+    return visualLocalizerMemory;
+  }
+
+  async function saveVisualLocalizerMemory(patch) {
+    visualLocalizerMemory = { ...visualLocalizerMemory, ...(patch || {}) };
+    try {
+      await chrome.storage.local.set({
+        visualLocalizerState: visualLocalizerMemory,
+      });
+    } catch (err) {
+      console.error(err);
+    }
+    return visualLocalizerMemory;
+  }
+
+  async function consumeTextWorkflowPending(dataUrl) {
+    await loadTextRemixMemory();
+    await loadVisualLocalizerMemory();
+    if (textRemixMemory.pendingCapture) {
+      await saveTextRemixMemory({
+        captureDataUrl: dataUrl,
+        texts: [],
+        resultDataUrl: null,
+        pendingCapture: false,
+      });
+      return "text-remix";
+    }
+    if (visualLocalizerMemory.pendingCapture) {
+      await saveVisualLocalizerMemory({
+        captureDataUrl: dataUrl,
+        texts: [],
+        drafts: {},
+        results: {},
+        pendingCapture: false,
+      });
+      return "visual-localizer";
+    }
+    return null;
+  }
+
+  async function startTextWorkflowCapture(workflow) {
+    if (inFlight || capturing) return;
+    if (workflow === "text-remix") {
+      await saveTextRemixMemory({ pendingCapture: true });
+    } else if (workflow === "visual-localizer") {
+      await saveVisualLocalizerMemory({ pendingCapture: true });
+    }
+    teardownHost();
+    beginCapture();
+  }
+
   function ensureHost() {
     let host = document.getElementById(HOST_ID);
     if (host && !shadowRoot) {
@@ -211,9 +393,65 @@
     headerBackHandler = null;
     promptInputRef = null;
     applyBtnRef = null;
+    selectedAspectRatio = "original";
     assetCountEl = null;
     assetBadgesEl = null;
     assetsPanelEl = null;
+    allWorkspaceRef = null;
+    mashupWorkspaceRef = null;
+    workflowPopRef = null;
+    workflowLabelRef = null;
+    mashupSubjectPreviewRef = null;
+    mashupStylePreviewRef = null;
+    mashupResultWrapRef = null;
+    mashupPromptRef = null;
+    mashupGenerateBtnRef = null;
+    textRemixWorkspaceRef = null;
+    visualLocalizerWorkspaceRef = null;
+    textRemixUi = {};
+    visualLocalizerUi = {};
+    workflowMode = "all";
+  }
+
+  async function cancelMashupCaptureIfNeeded() {
+    await loadMashupMemory();
+    await loadTextRemixMemory();
+    await loadVisualLocalizerMemory();
+    if (mashupMemory.pendingSlot) {
+      await saveMashupMemory({ pendingSlot: null });
+      const reopenUrl =
+        mashupMemory.subjectDataUrl ||
+        mashupMemory.styleDataUrl ||
+        mashupMemory.resultDataUrl;
+      if (reopenUrl) {
+        ensureHost();
+        await showModal(reopenUrl, { workflow: "mashup" });
+        return true;
+      }
+      return false;
+    }
+    if (textRemixMemory.pendingCapture) {
+      await saveTextRemixMemory({ pendingCapture: false });
+      const reopenUrl =
+        textRemixMemory.captureDataUrl || textRemixMemory.resultDataUrl;
+      if (reopenUrl) {
+        ensureHost();
+        await showModal(reopenUrl, { workflow: "text-remix" });
+        return true;
+      }
+      return false;
+    }
+    if (visualLocalizerMemory.pendingCapture) {
+      await saveVisualLocalizerMemory({ pendingCapture: false });
+      const reopenUrl = visualLocalizerMemory.captureDataUrl;
+      if (reopenUrl) {
+        ensureHost();
+        await showModal(reopenUrl, { workflow: "visual-localizer" });
+        return true;
+      }
+      return false;
+    }
+    return false;
   }
 
   function showCaptureOverlay() {
@@ -242,6 +480,7 @@
       if (e.key === "Escape") {
         cleanupListeners();
         teardownHost();
+        cancelMashupCaptureIfNeeded();
       }
     };
 
@@ -268,6 +507,7 @@
 
       if (rect.width < 8 || rect.height < 8) {
         teardownHost();
+        cancelMashupCaptureIfNeeded();
         return;
       }
 
@@ -292,6 +532,16 @@
         if (activeHost) activeHost.style.visibility = "";
         croppedDataUrl = await cropDataUrl(dataUrl, rect);
         capturing = false;
+        const pendingMashup = await consumeMashupPendingSlot(croppedDataUrl);
+        if (pendingMashup) {
+          showModal(croppedDataUrl, { workflow: "mashup" });
+          return;
+        }
+        const pendingText = await consumeTextWorkflowPending(croppedDataUrl);
+        if (pendingText) {
+          showModal(croppedDataUrl, { workflow: pendingText });
+          return;
+        }
         persistLastCapture(croppedDataUrl, null);
         showModal(croppedDataUrl);
       } catch (err) {
@@ -377,6 +627,8 @@
   }
 
   const MATERIAL_PATHS = {
+    info:
+      "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z",
     close:
       "M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z",
     more_vert:
@@ -421,13 +673,20 @@
     return wrap;
   }
 
-  function showModal(captureDataUrl) {
+  async function showModal(captureDataUrl, opts) {
     modalOpen = true;
     resultDataUrl = null;
     croppedDataUrl = captureDataUrl || null;
     selectedAssetIds = [];
     selectedAssetMeta = {};
     contextEnabled = false;
+    await loadMashupMemory();
+    await loadTextRemixMemory();
+    await loadVisualLocalizerMemory();
+    const allowed = ["all", "mashup", "text-remix", "visual-localizer"];
+    const initialWorkflow = allowed.includes(opts?.workflow)
+      ? opts.workflow
+      : "all";
     clearShadowUi();
 
     const root = document.createElement("div");
@@ -456,14 +715,20 @@
     });
 
     const brand = document.createElement("div");
-    brand.className = "sc-header-brand";
-    brand.setAttribute("aria-label", "See & Capture");
+    brand.className = "sc-header-brand sc-workflow-brand";
+    brand.setAttribute("aria-label", "See & Capture workflows");
 
     const logo = document.createElement("img");
     logo.className = "sc-header-logo";
     logo.src = chrome.runtime.getURL("icons/logo.png");
     logo.alt = "";
     logo.draggable = false;
+
+    const workflowBtn = document.createElement("button");
+    workflowBtn.type = "button";
+    workflowBtn.className = "sc-workflow-btn";
+    workflowBtn.setAttribute("aria-haspopup", "menu");
+    workflowBtn.setAttribute("aria-expanded", "false");
 
     const wordmark = document.createElement("span");
     wordmark.className = "sc-header-wordmark";
@@ -480,8 +745,55 @@
     captureEm.textContent = "Capture";
     wordmark.appendChild(captureEm);
 
+    const workflowLabel = document.createElement("span");
+    workflowLabel.className = "sc-workflow-label";
+    workflowLabel.textContent = "All";
+    workflowLabelRef = workflowLabel;
+
+    workflowBtn.appendChild(wordmark);
+    workflowBtn.appendChild(workflowLabel);
+    workflowBtn.appendChild(materialIcon("expand_more", "sc-btn-icon sc-btn-caret"));
+
+    const workflowPop = document.createElement("div");
+    workflowPop.className = "sc-workflow-pop is-hidden";
+    workflowPop.setAttribute("role", "menu");
+    workflowPopRef = workflowPop;
+
+    const workflowsHead = document.createElement("p");
+    workflowsHead.className = "sc-workflow-pop-head";
+    workflowsHead.textContent = "Workflows";
+    workflowPop.appendChild(workflowsHead);
+
+    function addWorkflowOption(id, label) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "sc-workflow-option";
+      item.dataset.workflow = id;
+      item.setAttribute("role", "menuitem");
+      item.textContent = label;
+      item.addEventListener("click", (e) => {
+        e.stopPropagation();
+        workflowPop.classList.add("is-hidden");
+        workflowBtn.setAttribute("aria-expanded", "false");
+        setWorkflowMode(id);
+      });
+      workflowPop.appendChild(item);
+    }
+    addWorkflowOption("all", "See & Capture");
+    addWorkflowOption("mashup", "See & Capture – Mashup");
+    addWorkflowOption("text-remix", "Text Remix");
+    addWorkflowOption("visual-localizer", "Visual Localizer");
+
+    workflowBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const opening = workflowPop.classList.contains("is-hidden");
+      workflowPop.classList.toggle("is-hidden", !opening);
+      workflowBtn.setAttribute("aria-expanded", opening ? "true" : "false");
+    });
+
     brand.appendChild(logo);
-    brand.appendChild(wordmark);
+    brand.appendChild(workflowBtn);
+    brand.appendChild(workflowPop);
 
     const saveWrap = document.createElement("div");
     saveWrap.className = "sc-save-wrap";
@@ -677,15 +989,42 @@
     modalRef = modal;
     selectedPane = "capture";
 
+    const allWorkspace = document.createElement("div");
+    allWorkspace.className = "sc-workspace sc-workspace-all";
+    allWorkspace.appendChild(body);
+    allWorkspace.appendChild(composer);
+    allWorkspaceRef = allWorkspace;
+
+    const mashupWorkspace = buildMashupWorkspace();
+    mashupWorkspaceRef = mashupWorkspace;
+    const textRemixWorkspace = buildTextRemixWorkspace();
+    textRemixWorkspaceRef = textRemixWorkspace;
+    const visualLocalizerWorkspace = buildVisualLocalizerWorkspace();
+    visualLocalizerWorkspaceRef = visualLocalizerWorkspace;
+
     modal.appendChild(header);
-    modal.appendChild(body);
-    modal.appendChild(composer);
+    modal.appendChild(allWorkspace);
+    modal.appendChild(mashupWorkspace);
+    modal.appendChild(textRemixWorkspace);
+    modal.appendChild(visualLocalizerWorkspace);
     glass.appendChild(modal);
     root.appendChild(glass);
     shadowRoot.appendChild(root);
 
+    setWorkflowMode(initialWorkflow);
+
     const onKeyDown = (e) => {
       if (e.key === "Escape" && !inFlight) {
+        const tipOpen = shadowRoot.querySelector(
+          ".sc-apply-tip-pop:not(.is-hidden)"
+        );
+        if (tipOpen) {
+          e.stopPropagation();
+          tipOpen.classList.add("is-hidden");
+          const tipBtn = shadowRoot.querySelector(".sc-apply-tip-btn");
+          if (tipBtn) tipBtn.setAttribute("aria-expanded", "false");
+          return;
+        }
         const boards = modal.querySelector(".sc-boards-view");
         if (boards) {
           e.stopPropagation();
@@ -703,6 +1042,13 @@
     window.addEventListener("keydown", onKeyDown, true);
 
     root.addEventListener("click", (e) => {
+      if (!workflowPop.classList.contains("is-hidden")) {
+        if (!e.target.closest(".sc-workflow-brand")) {
+          workflowPop.classList.add("is-hidden");
+          const wfBtn = shadowRoot.querySelector(".sc-workflow-btn");
+          if (wfBtn) wfBtn.setAttribute("aria-expanded", "false");
+        }
+      }
       if (!menuPop.classList.contains("is-hidden")) {
         menuPop.classList.add("is-hidden");
       }
@@ -722,8 +1068,662 @@
         const aspectBtn = shadowRoot.querySelector(".sc-aspect-btn");
         if (aspectBtn) aspectBtn.setAttribute("aria-expanded", "false");
       }
+      const tipPop = shadowRoot?.querySelector(".sc-apply-tip-pop:not(.is-hidden)");
+      if (tipPop && !e.target.closest(".sc-apply-tip-wrap")) {
+        tipPop.classList.add("is-hidden");
+        const tipBtn = shadowRoot.querySelector(".sc-apply-tip-btn");
+        if (tipBtn) tipBtn.setAttribute("aria-expanded", "false");
+      }
       if (e.target === root && !inFlight) teardownHost();
     });
+  }
+
+  function setWorkflowMode(mode) {
+    const allowed = ["all", "mashup", "text-remix", "visual-localizer"];
+    workflowMode = allowed.includes(mode) ? mode : "all";
+    if (allWorkspaceRef) {
+      allWorkspaceRef.classList.toggle("is-hidden", workflowMode !== "all");
+    }
+    if (mashupWorkspaceRef) {
+      mashupWorkspaceRef.classList.toggle(
+        "is-hidden",
+        workflowMode !== "mashup"
+      );
+    }
+    if (textRemixWorkspaceRef) {
+      textRemixWorkspaceRef.classList.toggle(
+        "is-hidden",
+        workflowMode !== "text-remix"
+      );
+    }
+    if (visualLocalizerWorkspaceRef) {
+      visualLocalizerWorkspaceRef.classList.toggle(
+        "is-hidden",
+        workflowMode !== "visual-localizer"
+      );
+    }
+    if (workflowLabelRef) {
+      const labels = {
+        all: "All",
+        mashup: "Mashup",
+        "text-remix": "Text Remix",
+        "visual-localizer": "Localizer",
+      };
+      workflowLabelRef.textContent = labels[workflowMode] || "All";
+    }
+    if (workflowPopRef) {
+      workflowPopRef.querySelectorAll(".sc-workflow-option").forEach((el) => {
+        el.classList.toggle(
+          "is-selected",
+          el.dataset.workflow === workflowMode
+        );
+      });
+    }
+    if (workflowMode === "mashup") refreshMashupPreviews();
+    if (workflowMode === "text-remix") refreshTextRemixUi();
+    if (workflowMode === "visual-localizer") refreshVisualLocalizerUi();
+  }
+
+  function setPreviewImage(el, dataUrl, emptyText) {
+    if (!el) return;
+    el.innerHTML = "";
+    if (!dataUrl) {
+      const empty = document.createElement("div");
+      empty.className = "sc-tw-empty";
+      empty.textContent = emptyText;
+      el.appendChild(empty);
+      return;
+    }
+    const img = document.createElement("img");
+    img.alt = emptyText;
+    img.src = dataUrl;
+    el.appendChild(img);
+  }
+
+  function refreshTextRemixUi() {
+    setPreviewImage(
+      textRemixUi.preview,
+      textRemixMemory.captureDataUrl,
+      "Capture a graphic to remix"
+    );
+    const list = textRemixUi.list;
+    if (!list) return;
+    list.innerHTML = "";
+    (textRemixMemory.texts || []).forEach((row, index) => {
+      const item = document.createElement("div");
+      item.className = "sc-tw-row";
+      const original = document.createElement("div");
+      original.className = "sc-tw-original";
+      original.textContent = row.text;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "sc-tw-input";
+      input.value = row.newText != null ? row.newText : row.text;
+      input.placeholder = "New copy";
+      input.addEventListener("input", () => {
+        textRemixMemory.texts[index] = {
+          ...textRemixMemory.texts[index],
+          newText: input.value,
+        };
+      });
+      item.appendChild(original);
+      item.appendChild(input);
+      list.appendChild(item);
+    });
+    if (textRemixUi.result) {
+      setPreviewImage(
+        textRemixUi.result,
+        textRemixMemory.resultDataUrl,
+        "Swapped result appears here"
+      );
+    }
+  }
+
+  function refreshVisualLocalizerUi() {
+    setPreviewImage(
+      visualLocalizerUi.preview,
+      visualLocalizerMemory.captureDataUrl,
+      "Capture an ad graphic"
+    );
+    if (visualLocalizerUi.chips) {
+      visualLocalizerUi.chips.querySelectorAll(".sc-tw-chip").forEach((chip) => {
+        const lang = chip.dataset.lang;
+        chip.classList.toggle(
+          "is-selected",
+          visualLocalizerMemory.languages.includes(lang)
+        );
+      });
+    }
+    if (visualLocalizerUi.styleLiteral && visualLocalizerUi.styleMarketing) {
+      visualLocalizerUi.styleLiteral.checked =
+        visualLocalizerMemory.style !== "marketing";
+      visualLocalizerUi.styleMarketing.checked =
+        visualLocalizerMemory.style === "marketing";
+    }
+    const table = visualLocalizerUi.table;
+    if (table) {
+      table.innerHTML = "";
+      const langs = visualLocalizerMemory.languages || [];
+      (visualLocalizerMemory.texts || []).forEach((src) => {
+        const row = document.createElement("div");
+        row.className = "sc-tw-table-row";
+        const srcEl = document.createElement("div");
+        srcEl.className = "sc-tw-original";
+        srcEl.textContent = src.text;
+        row.appendChild(srcEl);
+        langs.forEach((lang) => {
+          const draftRows = visualLocalizerMemory.drafts[lang] || [];
+          const found = draftRows.find((d) => d.id === src.id);
+          const input = document.createElement("input");
+          input.type = "text";
+          input.className = "sc-tw-input";
+          input.placeholder = lang.toUpperCase();
+          input.value = found?.text || "";
+          input.addEventListener("input", () => {
+            const list = Array.isArray(visualLocalizerMemory.drafts[lang])
+              ? [...visualLocalizerMemory.drafts[lang]]
+              : [];
+            const idx = list.findIndex((d) => d.id === src.id);
+            if (idx >= 0) list[idx] = { id: src.id, text: input.value };
+            else list.push({ id: src.id, text: input.value });
+            visualLocalizerMemory.drafts = {
+              ...visualLocalizerMemory.drafts,
+              [lang]: list,
+            };
+          });
+          row.appendChild(input);
+        });
+        table.appendChild(row);
+      });
+    }
+    const tabs = visualLocalizerUi.resultTabs;
+    const resultWrap = visualLocalizerUi.resultWrap;
+    if (tabs && resultWrap) {
+      tabs.innerHTML = "";
+      resultWrap.innerHTML = "";
+      const entries = Object.entries(visualLocalizerMemory.results || {});
+      if (!entries.length) {
+        setPreviewImage(resultWrap, null, "Localized results appear here");
+      } else {
+        let active = entries[0][0];
+        entries.forEach(([lang, url]) => {
+          const tab = document.createElement("button");
+          tab.type = "button";
+          tab.className = "sc-tw-result-tab";
+          tab.textContent = lang.toUpperCase();
+          tab.addEventListener("click", () => {
+            tabs
+              .querySelectorAll(".sc-tw-result-tab")
+              .forEach((t) => t.classList.remove("is-active"));
+            tab.classList.add("is-active");
+            setPreviewImage(resultWrap, url, lang);
+          });
+          if (lang === active) tab.classList.add("is-active");
+          tabs.appendChild(tab);
+        });
+        setPreviewImage(resultWrap, entries[0][1], entries[0][0]);
+      }
+    }
+  }
+
+  function buildTextRemixWorkspace() {
+    const wrap = document.createElement("div");
+    wrap.className = "sc-workspace sc-workspace-text-remix is-hidden";
+
+    const top = document.createElement("div");
+    top.className = "sc-tw-top";
+    const preview = document.createElement("div");
+    preview.className = "sc-tw-preview";
+    textRemixUi.preview = preview;
+    const actions = document.createElement("div");
+    actions.className = "sc-tw-actions";
+    const captureBtn = document.createElement("button");
+    captureBtn.type = "button";
+    captureBtn.className = "sc-mashup-capture-btn";
+    captureBtn.textContent = "Capture graphic";
+    captureBtn.addEventListener("click", () =>
+      startTextWorkflowCapture("text-remix")
+    );
+    const detectBtn = document.createElement("button");
+    detectBtn.type = "button";
+    detectBtn.className = "sc-mashup-capture-btn";
+    detectBtn.textContent = "Detect text";
+    detectBtn.addEventListener("click", () => runTextRemixDetect());
+    actions.appendChild(captureBtn);
+    actions.appendChild(detectBtn);
+    top.appendChild(preview);
+    top.appendChild(actions);
+
+    const list = document.createElement("div");
+    list.className = "sc-tw-list";
+    textRemixUi.list = list;
+
+    const swapBtn = document.createElement("button");
+    swapBtn.type = "button";
+    swapBtn.className = "sc-mashup-generate";
+    swapBtn.textContent = "Swap Text";
+    swapBtn.addEventListener("click", () => runTextRemixSwap());
+
+    const result = document.createElement("div");
+    result.className = "sc-tw-result";
+    textRemixUi.result = result;
+
+    wrap.appendChild(top);
+    wrap.appendChild(list);
+    wrap.appendChild(swapBtn);
+    wrap.appendChild(result);
+    refreshTextRemixUi();
+    return wrap;
+  }
+
+  function buildVisualLocalizerWorkspace() {
+    const wrap = document.createElement("div");
+    wrap.className = "sc-workspace sc-workspace-visual-localizer is-hidden";
+
+    const top = document.createElement("div");
+    top.className = "sc-tw-top";
+    const preview = document.createElement("div");
+    preview.className = "sc-tw-preview";
+    visualLocalizerUi.preview = preview;
+    const actions = document.createElement("div");
+    actions.className = "sc-tw-actions";
+    const captureBtn = document.createElement("button");
+    captureBtn.type = "button";
+    captureBtn.className = "sc-mashup-capture-btn";
+    captureBtn.textContent = "Capture graphic";
+    captureBtn.addEventListener("click", () =>
+      startTextWorkflowCapture("visual-localizer")
+    );
+    const detectBtn = document.createElement("button");
+    detectBtn.type = "button";
+    detectBtn.className = "sc-mashup-capture-btn";
+    detectBtn.textContent = "Detect text";
+    detectBtn.addEventListener("click", () => runVisualLocalizerDetect());
+    actions.appendChild(captureBtn);
+    actions.appendChild(detectBtn);
+    top.appendChild(preview);
+    top.appendChild(actions);
+
+    const chips = document.createElement("div");
+    chips.className = "sc-tw-chips";
+    visualLocalizerUi.chips = chips;
+    ["es", "de", "ja", "fr", "pt"].forEach((lang) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "sc-tw-chip";
+      chip.dataset.lang = lang;
+      chip.textContent = lang.toUpperCase();
+      chip.addEventListener("click", () => {
+        const set = new Set(visualLocalizerMemory.languages);
+        if (set.has(lang)) {
+          if (set.size > 1) set.delete(lang);
+        } else set.add(lang);
+        visualLocalizerMemory.languages = [...set];
+        refreshVisualLocalizerUi();
+      });
+      chips.appendChild(chip);
+    });
+
+    const styleRow = document.createElement("div");
+    styleRow.className = "sc-tw-style-row";
+    const lit = document.createElement("label");
+    const litInput = document.createElement("input");
+    litInput.type = "radio";
+    litInput.name = "sc-vl-style";
+    litInput.value = "literal";
+    litInput.addEventListener("change", () => {
+      if (litInput.checked) visualLocalizerMemory.style = "literal";
+    });
+    lit.appendChild(litInput);
+    lit.appendChild(document.createTextNode(" Literal"));
+    const mkt = document.createElement("label");
+    const mktInput = document.createElement("input");
+    mktInput.type = "radio";
+    mktInput.name = "sc-vl-style";
+    mktInput.value = "marketing";
+    mktInput.addEventListener("change", () => {
+      if (mktInput.checked) visualLocalizerMemory.style = "marketing";
+    });
+    mkt.appendChild(mktInput);
+    mkt.appendChild(document.createTextNode(" Marketing adapt"));
+    visualLocalizerUi.styleLiteral = litInput;
+    visualLocalizerUi.styleMarketing = mktInput;
+    styleRow.appendChild(lit);
+    styleRow.appendChild(mkt);
+
+    const draftActions = document.createElement("div");
+    draftActions.className = "sc-tw-actions";
+    const translateBtn = document.createElement("button");
+    translateBtn.type = "button";
+    translateBtn.className = "sc-mashup-capture-btn";
+    translateBtn.textContent = "Draft translations";
+    translateBtn.addEventListener("click", () => runVisualLocalizerTranslate());
+    draftActions.appendChild(translateBtn);
+
+    const table = document.createElement("div");
+    table.className = "sc-tw-table";
+    visualLocalizerUi.table = table;
+
+    const renderBtn = document.createElement("button");
+    renderBtn.type = "button";
+    renderBtn.className = "sc-mashup-generate";
+    renderBtn.textContent = "Translate & Render";
+    renderBtn.addEventListener("click", () => runVisualLocalizerRender());
+
+    const resultTabs = document.createElement("div");
+    resultTabs.className = "sc-tw-result-tabs";
+    visualLocalizerUi.resultTabs = resultTabs;
+    const resultWrap = document.createElement("div");
+    resultWrap.className = "sc-tw-result";
+    visualLocalizerUi.resultWrap = resultWrap;
+
+    wrap.appendChild(top);
+    wrap.appendChild(chips);
+    wrap.appendChild(styleRow);
+    wrap.appendChild(draftActions);
+    wrap.appendChild(table);
+    wrap.appendChild(renderBtn);
+    wrap.appendChild(resultTabs);
+    wrap.appendChild(resultWrap);
+    refreshVisualLocalizerUi();
+    return wrap;
+  }
+
+  async function runTextRemixDetect() {
+    if (!textRemixMemory.captureDataUrl) {
+      alert("Capture a graphic first.");
+      return;
+    }
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      const data = await requestDetectText(textRemixMemory.captureDataUrl);
+      const texts = (data.texts || []).map((t) => ({
+        ...t,
+        newText: t.text,
+      }));
+      await saveTextRemixMemory({ texts });
+      refreshTextRemixUi();
+    } catch (err) {
+      alert(err?.message || "Detect text failed");
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  async function runTextRemixSwap() {
+    if (!textRemixMemory.captureDataUrl) {
+      alert("Capture a graphic first.");
+      return;
+    }
+    const replacements = (textRemixMemory.texts || [])
+      .map((t) => ({
+        from: t.text,
+        to: String(t.newText != null ? t.newText : t.text).trim(),
+      }))
+      .filter((r) => r.from && r.to && r.from !== r.to);
+    if (!replacements.length) {
+      alert("Change at least one line of copy before swapping.");
+      return;
+    }
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      const data = await requestTextSwap({
+        presetId: "text-remix",
+        imageDataUrl: textRemixMemory.captureDataUrl,
+        replacements,
+      });
+      await saveTextRemixMemory({ resultDataUrl: data.imageDataUrl });
+      refreshTextRemixUi();
+    } catch (err) {
+      alert(err?.message || "Swap text failed");
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  async function runVisualLocalizerDetect() {
+    if (!visualLocalizerMemory.captureDataUrl) {
+      alert("Capture a graphic first.");
+      return;
+    }
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      const data = await requestDetectText(visualLocalizerMemory.captureDataUrl);
+      await saveVisualLocalizerMemory({
+        texts: data.texts || [],
+        drafts: {},
+        results: {},
+      });
+      refreshVisualLocalizerUi();
+    } catch (err) {
+      alert(err?.message || "Detect text failed");
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  async function runVisualLocalizerTranslate() {
+    if (!(visualLocalizerMemory.texts || []).length) {
+      alert("Detect text first.");
+      return;
+    }
+    if (inFlight) return;
+    inFlight = true;
+    try {
+      const data = await requestTranslateCopy({
+        texts: visualLocalizerMemory.texts,
+        languages: visualLocalizerMemory.languages,
+        style: visualLocalizerMemory.style,
+      });
+      await saveVisualLocalizerMemory({ drafts: data.translations || {} });
+      refreshVisualLocalizerUi();
+    } catch (err) {
+      alert(err?.message || "Draft translations failed");
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  async function runVisualLocalizerRender() {
+    if (!visualLocalizerMemory.captureDataUrl) {
+      alert("Capture a graphic first.");
+      return;
+    }
+    const langs = visualLocalizerMemory.languages || [];
+    if (!langs.length) {
+      alert("Select at least one language.");
+      return;
+    }
+    if (inFlight) return;
+    inFlight = true;
+    const results = { ...visualLocalizerMemory.results };
+    try {
+      for (const lang of langs) {
+        const draftRows = visualLocalizerMemory.drafts[lang] || [];
+        const replacements = (visualLocalizerMemory.texts || []).map((src) => {
+          const found = draftRows.find((d) => d.id === src.id);
+          return {
+            from: src.text,
+            to: String(found?.text || src.text).trim(),
+          };
+        }).filter((r) => r.from && r.to && r.from !== r.to);
+        if (!replacements.length) continue;
+        const data = await requestTextSwap({
+          presetId: "visual-localizer",
+          imageDataUrl: visualLocalizerMemory.captureDataUrl,
+          replacements,
+          languageLabel: lang.toUpperCase(),
+        });
+        results[lang] = data.imageDataUrl;
+      }
+      await saveVisualLocalizerMemory({ results });
+      refreshVisualLocalizerUi();
+    } catch (err) {
+      alert(err?.message || "Translate & Render failed");
+    } finally {
+      inFlight = false;
+    }
+  }
+
+  function setMashupSlotPreview(el, dataUrl, emptyText) {
+    if (!el) return;
+    el.innerHTML = "";
+    if (!dataUrl) {
+      const empty = document.createElement("div");
+      empty.className = "sc-mashup-slot-empty";
+      empty.textContent = emptyText;
+      el.appendChild(empty);
+      return;
+    }
+    const img = document.createElement("img");
+    img.alt = emptyText;
+    img.src = dataUrl;
+    el.appendChild(img);
+  }
+
+  function refreshMashupPreviews() {
+    setMashupSlotPreview(
+      mashupSubjectPreviewRef,
+      mashupMemory.subjectDataUrl,
+      "Subject / product"
+    );
+    setMashupSlotPreview(
+      mashupStylePreviewRef,
+      mashupMemory.styleDataUrl,
+      "Style / background"
+    );
+    if (mashupResultWrapRef) {
+      mashupResultWrapRef.innerHTML = "";
+      if (mashupMemory.resultDataUrl) {
+        const img = document.createElement("img");
+        img.alt = "Mashup result";
+        img.src = mashupMemory.resultDataUrl;
+        mashupResultWrapRef.appendChild(img);
+      } else {
+        const empty = document.createElement("div");
+        empty.className = "sc-mashup-result-empty";
+        empty.textContent = "Hybrid mashup will appear here";
+        mashupResultWrapRef.appendChild(empty);
+      }
+    }
+  }
+
+  function buildMashupWorkspace() {
+    const wrap = document.createElement("div");
+    wrap.className = "sc-workspace sc-workspace-mashup is-hidden";
+
+    const slots = document.createElement("div");
+    slots.className = "sc-mashup-slots";
+
+    function makeSlot(title, captureLabel, slotKey) {
+      const slot = document.createElement("div");
+      slot.className = "sc-mashup-slot";
+      const label = document.createElement("p");
+      label.className = "sc-pane-label";
+      label.textContent = title;
+      const preview = document.createElement("div");
+      preview.className = "sc-mashup-slot-preview";
+      if (slotKey === "subject") mashupSubjectPreviewRef = preview;
+      else mashupStylePreviewRef = preview;
+      const captureBtn = document.createElement("button");
+      captureBtn.type = "button";
+      captureBtn.className = "sc-mashup-capture-btn";
+      captureBtn.textContent = captureLabel;
+      captureBtn.addEventListener("click", () => startMashupSlotCapture(slotKey));
+      slot.appendChild(label);
+      slot.appendChild(preview);
+      slot.appendChild(captureBtn);
+      return slot;
+    }
+
+    slots.appendChild(
+      makeSlot("Slot 1 · Subject / Product", "Capture Product", "subject")
+    );
+    slots.appendChild(
+      makeSlot("Slot 2 · Style / Background", "Capture Style", "style")
+    );
+
+    const resultPane = document.createElement("div");
+    resultPane.className = "sc-mashup-result-pane";
+    const resultLabel = document.createElement("p");
+    resultLabel.className = "sc-pane-label";
+    resultLabel.textContent = "Hybrid";
+    const resultWrap = document.createElement("div");
+    resultWrap.className = "sc-mashup-result-wrap";
+    mashupResultWrapRef = resultWrap;
+    resultPane.appendChild(resultLabel);
+    resultPane.appendChild(resultWrap);
+
+    const controls = document.createElement("div");
+    controls.className = "sc-mashup-controls";
+    const prompt = document.createElement("textarea");
+    prompt.className = "sc-mashup-prompt";
+    prompt.rows = 2;
+    prompt.placeholder =
+      "Optional: soft shadows, golden hour lighting, keep logo sharp…";
+    mashupPromptRef = prompt;
+    const generateBtn = document.createElement("button");
+    generateBtn.type = "button";
+    generateBtn.className = "sc-mashup-generate";
+    generateBtn.textContent = "Generate Hybrid Mashup";
+    mashupGenerateBtnRef = generateBtn;
+    generateBtn.addEventListener("click", () => runMashupGenerate());
+    controls.appendChild(prompt);
+    controls.appendChild(generateBtn);
+
+    wrap.appendChild(slots);
+    wrap.appendChild(resultPane);
+    wrap.appendChild(controls);
+    refreshMashupPreviews();
+    return wrap;
+  }
+
+  async function runMashupGenerate() {
+    if (inFlight) return;
+    if (!mashupMemory.subjectDataUrl || !mashupMemory.styleDataUrl) {
+      alert("Capture both a product (Slot 1) and a style (Slot 2) first.");
+      return;
+    }
+    inFlight = true;
+    if (mashupGenerateBtnRef) mashupGenerateBtnRef.disabled = true;
+    if (mashupResultWrapRef) {
+      mashupResultWrapRef.innerHTML = "";
+      const status = document.createElement("div");
+      status.className = "sc-status";
+      const spinner = document.createElement("div");
+      spinner.className = "sc-spinner";
+      const label = document.createElement("span");
+      label.textContent = "Generating hybrid…";
+      status.appendChild(spinner);
+      status.appendChild(label);
+      mashupResultWrapRef.appendChild(status);
+    }
+    try {
+      const prompt = String(mashupPromptRef?.value || "").trim();
+      const data = await requestMashupHybrid({
+        styleDataUrl: mashupMemory.styleDataUrl,
+        subjectDataUrl: mashupMemory.subjectDataUrl,
+        prompt,
+      });
+      await saveMashupMemory({ resultDataUrl: data.imageDataUrl });
+      refreshMashupPreviews();
+    } catch (err) {
+      if (mashupResultWrapRef) {
+        mashupResultWrapRef.innerHTML = "";
+        const statusErr = document.createElement("div");
+        statusErr.className = "sc-status is-error";
+        statusErr.textContent =
+          err?.message ||
+          "Mashup failed. Is the local server running on port 8787?";
+        mashupResultWrapRef.appendChild(statusErr);
+      }
+    } finally {
+      inFlight = false;
+      if (mashupGenerateBtnRef) mashupGenerateBtnRef.disabled = false;
+    }
   }
 
   function buildPromptComposer(rightWrap) {
@@ -736,6 +1736,7 @@
       { id: "black-white", label: "Black and white" },
       { id: "remove-bg", label: "Remove background" },
       { id: "get-prompt", label: "Get the prompt" },
+      { id: "extract-palette", label: "Extract palette" },
     ];
     quickDefs.forEach((def) => {
       const btn = document.createElement("button");
@@ -745,6 +1746,7 @@
       btn.textContent = def.label;
       btn.addEventListener("click", () => {
         if (def.id === "get-prompt") runGetPrompt(rightWrap);
+        else if (def.id === "extract-palette") runExtractPalette(rightWrap);
         else runQuickPreset(def.id, rightWrap);
       });
       quick.appendChild(btn);
@@ -990,6 +1992,51 @@
     applyBtnRef = applyBtn;
     applyBtn.addEventListener("click", () => runPromptApply(rightWrap));
 
+    const tipWrap = document.createElement("div");
+    tipWrap.className = "sc-apply-tip-wrap";
+    const tipBtn = document.createElement("button");
+    tipBtn.type = "button";
+    tipBtn.className = "sc-apply-tip-btn";
+    tipBtn.setAttribute("aria-label", "Apply tips and limitations");
+    tipBtn.setAttribute("aria-expanded", "false");
+    tipBtn.setAttribute("aria-haspopup", "true");
+    tipBtn.appendChild(materialIcon("info", "sc-btn-icon"));
+    const tipPop = document.createElement("div");
+    tipPop.className = "sc-apply-tip-pop is-hidden";
+    tipPop.setAttribute("role", "tooltip");
+    const tipList = document.createElement("ul");
+    tipList.className = "sc-apply-tip-list";
+    const tipItems = [
+      "Short surgical edits work best (e.g. “both arms extended toward the purple butterfly”). State counts clearly (“three arms”). Remove leftover conflicting phrases like the old hair or prop color.",
+      "Quantity or pose changes (e.g. “3 colossal arms”) are hard for image-guided edits—the source image anchors the pose. Color swaps are easier. Counts are requested strongly but not guaranteed.",
+    ];
+    tipItems.forEach((text) => {
+      const li = document.createElement("li");
+      li.textContent = text;
+      tipList.appendChild(li);
+    });
+    tipPop.appendChild(tipList);
+
+    function closeTipPop() {
+      tipPop.classList.add("is-hidden");
+      tipBtn.setAttribute("aria-expanded", "false");
+    }
+
+    function openTipPop() {
+      tipPop.classList.remove("is-hidden");
+      tipBtn.setAttribute("aria-expanded", "true");
+    }
+
+    tipBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (tipPop.classList.contains("is-hidden")) openTipPop();
+      else closeTipPop();
+    });
+    tipBtn.addEventListener("mouseenter", () => openTipPop());
+    tipWrap.addEventListener("mouseleave", () => closeTipPop());
+    tipWrap.appendChild(tipBtn);
+    tipWrap.appendChild(tipPop);
+
     const aspectWrap = document.createElement("div");
     aspectWrap.className = "sc-aspect-wrap";
     const aspectBtn = document.createElement("button");
@@ -1001,6 +2048,8 @@
     const aspectLabel = document.createElement("span");
     aspectLabel.className = "sc-aspect-label";
     aspectLabel.textContent = "Original";
+    aspectLabel.dataset.value = "original";
+    selectedAspectRatio = "original";
     aspectBtn.appendChild(aspectLabel);
     aspectBtn.appendChild(materialIcon("expand_more", "sc-btn-icon sc-btn-caret"));
 
@@ -1021,7 +2070,9 @@
     }
 
     function setAspectSelection(value, label) {
+      selectedAspectRatio = value;
       aspectLabel.textContent = label;
+      aspectLabel.dataset.value = value;
       aspectPop.querySelectorAll(".sc-aspect-option").forEach((el) => {
         const selected = el.dataset.value === value;
         el.classList.toggle("is-selected", selected);
@@ -1080,6 +2131,7 @@
 
     toolbar.appendChild(assetsWrap);
     toolbar.appendChild(aspectWrap);
+    toolbar.appendChild(tipWrap);
     toolbar.appendChild(applyBtn);
     field.appendChild(badges);
     field.appendChild(input);
@@ -1159,6 +2211,36 @@
     }
   }
 
+  async function runExtractPalette(rightWrap) {
+    if (inFlight || !croppedDataUrl) return;
+    inFlight = true;
+    if (applyBtnRef) applyBtnRef.disabled = true;
+    const buttons = shadowRoot
+      ? [...shadowRoot.querySelectorAll(".sc-quick-btn")]
+      : [];
+    buttons.forEach((b) => {
+      b.disabled = true;
+    });
+    try {
+      const hexes = await extractTopColors(croppedDataUrl, 5);
+      if (!hexes.length) {
+        throw new Error("Could not extract colors from this capture.");
+      }
+      showPaletteResult(rightWrap, hexes);
+    } catch (err) {
+      showError(
+        rightWrap,
+        err?.message || "Could not extract palette from capture."
+      );
+    } finally {
+      inFlight = false;
+      if (applyBtnRef) applyBtnRef.disabled = false;
+      buttons.forEach((b) => {
+        b.disabled = false;
+      });
+    }
+  }
+
   function setRightPaneLabel(text) {
     if (rightLabelRef) rightLabelRef.textContent = text;
   }
@@ -1203,6 +2285,10 @@
         imageDataUrl: resultDataUrl || croppedDataUrl,
         prompt,
         useAssets: selectedAssetIds.length > 0,
+        aspectRatio:
+          selectedAspectRatio && selectedAspectRatio !== "original"
+            ? selectedAspectRatio
+            : null,
       });
       showResult(rightWrap, data.imageDataUrl);
       chrome.runtime.sendMessage({
@@ -1652,9 +2738,10 @@
   function showResult(resultWrap, dataUrl) {
     setRightPaneLabel("Generation");
     resultWrap.innerHTML = "";
-    resultWrap.classList.remove("is-prompt");
+    resultWrap.classList.remove("is-prompt", "is-palette", "is-palette-scroll");
     resultWrap.classList.add("is-result");
     const img = document.createElement("img");
+    img.className = "sc-gen-image";
     img.alt = "Generated image";
     img.src = dataUrl;
     resultWrap.appendChild(img);
@@ -1666,6 +2753,7 @@
   function showPromptResult(resultWrap, promptText, modelId) {
     setRightPaneLabel("Prompt");
     resultWrap.innerHTML = "";
+    resultWrap.classList.remove("is-palette", "is-palette-scroll");
     resultWrap.classList.add("is-result", "is-prompt");
     const pane = document.createElement("div");
     pane.className = "sc-prompt-pane";
@@ -1707,6 +2795,177 @@
     pane.addEventListener("click", (e) => e.stopPropagation());
     resultWrap.appendChild(pane);
     setSelectedPane("result");
+  }
+
+  function buildPaletteBelow(hexColors) {
+    const pane = document.createElement("div");
+    pane.className = "sc-palette-below";
+    const heading = document.createElement("p");
+    heading.className = "sc-palette-below-title";
+    heading.textContent = "Palette";
+    const list = document.createElement("div");
+    list.className = "sc-palette-list";
+    const hexes = Array.isArray(hexColors) ? hexColors : [];
+    hexes.forEach((hex) => {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "sc-palette-swatch-row";
+      row.title = `Copy ${hex}`;
+      row.setAttribute("aria-label", `Copy color ${hex}`);
+      const chip = document.createElement("span");
+      chip.className = "sc-palette-swatch-chip";
+      chip.style.background = hex;
+      const label = document.createElement("span");
+      label.className = "sc-palette-swatch-hex";
+      label.textContent = hex;
+      const status = document.createElement("span");
+      status.className = "sc-palette-swatch-status";
+      status.textContent = "Copy";
+      row.appendChild(chip);
+      row.appendChild(label);
+      row.appendChild(status);
+      row.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        try {
+          await navigator.clipboard.writeText(hex);
+          status.textContent = "Copied";
+          setTimeout(() => {
+            status.textContent = "Copy";
+          }, 1200);
+        } catch (_err) {
+          alert(`Could not copy ${hex} — copy manually.`);
+        }
+      });
+      list.appendChild(row);
+    });
+    pane.appendChild(heading);
+    pane.appendChild(list);
+    pane.addEventListener("click", (e) => e.stopPropagation());
+    return pane;
+  }
+
+  function showPaletteResult(resultWrap, hexColors) {
+    const imageUrl = resultDataUrl || croppedDataUrl;
+    if (!imageUrl) {
+      showError(resultWrap, "Capture an image first, then extract a palette.");
+      return;
+    }
+
+    setRightPaneLabel("Generation · Palette");
+    resultWrap.classList.remove("is-prompt", "is-palette");
+    resultWrap.classList.add("is-result", "is-palette-scroll");
+
+    const existingBelow = resultWrap.querySelector(".sc-palette-below");
+    if (existingBelow) existingBelow.remove();
+
+    let stage = resultWrap.querySelector(".sc-gen-stage");
+    if (!stage) {
+      const previousImg = resultWrap.querySelector("img");
+      const src = previousImg?.src || imageUrl;
+      resultWrap.innerHTML = "";
+      stage = document.createElement("div");
+      stage.className = "sc-gen-stage";
+      const img = document.createElement("img");
+      img.className = "sc-gen-image";
+      img.alt = resultDataUrl ? "Generated image" : "Captured region";
+      img.src = src;
+      stage.appendChild(img);
+      resultWrap.appendChild(stage);
+      attachImageActions(stage, "result");
+    }
+
+    resultWrap.appendChild(buildPaletteBelow(hexColors));
+    setSelectedPane("result");
+    requestAnimationFrame(() => {
+      const below = resultWrap.querySelector(".sc-palette-below");
+      if (below) below.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }
+
+  function rgbToHex(r, g, b) {
+    const toHex = (n) => n.toString(16).padStart(2, "0");
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
+  }
+
+  function colorDistance(a, b) {
+    return Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b);
+  }
+
+  function extractTopColors(dataUrl, count = 5) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const maxSide = 96;
+          const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+          const w = Math.max(1, Math.round(img.width * scale));
+          const h = Math.max(1, Math.round(img.height * scale));
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d", { willReadFrequently: true });
+          if (!ctx) {
+            reject(new Error("Could not read image pixels."));
+            return;
+          }
+          ctx.drawImage(img, 0, 0, w, h);
+          const { data } = ctx.getImageData(0, 0, w, h);
+          const bucketSize = 24;
+          const buckets = new Map();
+          for (let i = 0; i < data.length; i += 4) {
+            const a = data[i + 3];
+            if (a < 128) continue;
+            const r = data[i];
+            const g = data[i + 1];
+            const b = data[i + 2];
+            const br = Math.round(r / bucketSize) * bucketSize;
+            const bg = Math.round(g / bucketSize) * bucketSize;
+            const bb = Math.round(b / bucketSize) * bucketSize;
+            const key = `${br},${bg},${bb}`;
+            const prev = buckets.get(key);
+            if (prev) {
+              prev.count += 1;
+              prev.rSum += r;
+              prev.gSum += g;
+              prev.bSum += b;
+            } else {
+              buckets.set(key, {
+                count: 1,
+                rSum: r,
+                gSum: g,
+                bSum: b,
+              });
+            }
+          }
+          const ranked = [...buckets.values()]
+            .map((bucket) => ({
+              count: bucket.count,
+              r: Math.round(bucket.rSum / bucket.count),
+              g: Math.round(bucket.gSum / bucket.count),
+              b: Math.round(bucket.bSum / bucket.count),
+            }))
+            .sort((a, b) => b.count - a.count);
+
+          const picked = [];
+          for (const color of ranked) {
+            if (picked.length >= count) break;
+            const tooClose = picked.some(
+              (existing) => colorDistance(existing, color) < 48
+            );
+            if (tooClose) continue;
+            picked.push(color);
+          }
+          if (!picked.length && ranked.length) {
+            picked.push(ranked[0]);
+          }
+          resolve(picked.map((c) => rgbToHex(c.r, c.g, c.b)));
+        } catch (err) {
+          reject(err);
+        }
+      };
+      img.onerror = () => reject(new Error("Could not load capture image."));
+      img.src = dataUrl;
+    });
   }
 
   function openImagePreview(dataUrl, opts) {
@@ -1856,7 +3115,7 @@
 
   function showWorking(resultWrap, statusText) {
     resultWrap.innerHTML = "";
-    resultWrap.classList.remove("is-prompt");
+    resultWrap.classList.remove("is-prompt", "is-palette", "is-palette-scroll");
     const status = document.createElement("div");
     status.className = "sc-status";
     const spinner = document.createElement("div");
@@ -1870,7 +3129,7 @@
 
   function showError(resultWrap, message) {
     resultWrap.innerHTML = "";
-    resultWrap.classList.remove("is-prompt");
+    resultWrap.classList.remove("is-prompt", "is-palette", "is-palette-scroll");
     const statusErr = document.createElement("div");
     statusErr.className = "sc-status is-error";
     statusErr.textContent = message;
@@ -1897,6 +3156,111 @@
       );
     }
     return { prompt: data.prompt, model: data.model || null };
+  }
+
+  async function requestMashupHybrid({
+    styleDataUrl,
+    subjectDataUrl,
+    prompt,
+  }) {
+    let response;
+    try {
+      response = await fetch("http://127.0.0.1:8787/api/edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          presetId: "mashup-hybrid",
+          imageDataUrl: styleDataUrl,
+          subjectDataUrl,
+          prompt: prompt || "",
+          model: "auto",
+        }),
+      });
+    } catch (_err) {
+      throw new Error(
+        "Could not reach local server on port 8787. Start it and try again."
+      );
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.imageDataUrl) {
+      throw new Error(
+        data.error || `Mashup failed (${response.status})`
+      );
+    }
+    return data;
+  }
+
+  async function requestDetectText(imageDataUrl) {
+    let response;
+    try {
+      response = await fetch("http://127.0.0.1:8787/api/detect-text", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageDataUrl }),
+      });
+    } catch (_err) {
+      throw new Error(
+        "Could not reach local server on port 8787. Start it and try again."
+      );
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !Array.isArray(data.texts)) {
+      throw new Error(data.error || `Detect text failed (${response.status})`);
+    }
+    return data;
+  }
+
+  async function requestTranslateCopy({ texts, languages, style }) {
+    let response;
+    try {
+      response = await fetch("http://127.0.0.1:8787/api/translate-copy", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ texts, languages, style }),
+      });
+    } catch (_err) {
+      throw new Error(
+        "Could not reach local server on port 8787. Start it and try again."
+      );
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.translations) {
+      throw new Error(
+        data.error || `Translate copy failed (${response.status})`
+      );
+    }
+    return data;
+  }
+
+  async function requestTextSwap({
+    presetId,
+    imageDataUrl,
+    replacements,
+    languageLabel,
+  }) {
+    let response;
+    try {
+      response = await fetch("http://127.0.0.1:8787/api/edit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          presetId,
+          imageDataUrl,
+          replacements,
+          languageLabel: languageLabel || "",
+          model: "auto",
+        }),
+      });
+    } catch (_err) {
+      throw new Error(
+        "Could not reach local server on port 8787. Start it and try again."
+      );
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.imageDataUrl) {
+      throw new Error(data.error || `Text swap failed (${response.status})`);
+    }
+    return data;
   }
 
   async function requestEdit(presetId, opts) {
@@ -1955,6 +3319,11 @@
       pageContext: prepared.pageContext || {},
       assets: useAssets ? prepared.assets || [] : [],
     };
+    const aspectRatio =
+      opts && typeof opts.aspectRatio === "string" ? opts.aspectRatio.trim() : "";
+    if (aspectRatio && aspectRatio !== "original") {
+      message.aspectRatio = aspectRatio;
+    }
 
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(message, (response) => {

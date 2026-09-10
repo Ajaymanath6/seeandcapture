@@ -30,11 +30,51 @@ const PRESETS = {
     prompt:
       "You are given two images. Image 1 is the SCENE (keep its background, camera angle, lighting, and composition). Image 2 is the REPLACEMENT SUBJECT (use this person's or object's identity). Replace ONLY the main subject/person/object in Image 1 with the subject from Image 2. Keep everything else in the scene the same. Do not invent a new location. Return one edited image.",
   },
+  "mashup-hybrid": {
+    id: "mashup-hybrid",
+    label: "Generate Hybrid Mashup",
+    mode: "mashup-hybrid",
+    prompt:
+      "You are given two images. Image 1 is the STYLE / ENVIRONMENT scene " +
+      "(use its background, lighting, color grade, camera angle, and atmosphere). " +
+      "Image 2 is the SUBJECT / PRODUCT (preserve its exact identity, shape, logos, and geometry). " +
+      "Composite the subject from Image 2 into the environment from Image 1 as a clean hybrid mashup. " +
+      "Match ambient light on the subject to the scene when possible. Do not invent a different product. " +
+      "Return one edited image.",
+  },
+  "text-remix": {
+    id: "text-remix",
+    label: "Text Remix",
+    mode: "text-swap",
+    prompt:
+      "Edit the attached graphic only. Replace the listed on-image text strings. " +
+      "Erase old lettering completely and paint new copy matching typography, color, " +
+      "perspective, glow/shadow, and placement. Do not change unrelated artwork or layout.",
+  },
+  "visual-localizer": {
+    id: "visual-localizer",
+    label: "Visual Localizer",
+    mode: "text-swap",
+    prompt:
+      "Edit the attached ad/graphic only. Replace on-image text with the provided translations. " +
+      "Erase old lettering, render localized copy matching style and placement, and scale text " +
+      "to fit buttons/banners without overflow. Keep brand art and layout intact.",
+  },
   "custom-prompt": {
     id: "custom-prompt",
     label: "Edit with prompt",
     mode: "eden-custom-prompt",
-    prompt: `${PRESERVE} Apply only the user's requested edit described below.`,
+    prompt:
+      "The attached image is an identity and style REFERENCE only. " +
+      "The user's target description below is authoritative: when it conflicts with the reference " +
+      "(pose, hand/arm count, hair color or texture, prop colors, clothing, or other explicit details), " +
+      "follow the target description. " +
+      "HARD CONSTRAINT: If the target description states an explicit count or quantity " +
+      "(digits like 2/3/4 or words like both/two/three/four, or phrases like multiple arms/hands), " +
+      "you MUST render that exact count—even when the reference image shows a different count. " +
+      "Do not collapse multiple requested limbs/objects into one. " +
+      "Keep unrelated regions stable when possible. " +
+      "Do not invent a wholly new scene unless the target description requires it. Return one edited image.",
   },
 };
 

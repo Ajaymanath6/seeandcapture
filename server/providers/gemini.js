@@ -81,7 +81,7 @@ async function editWithNanoBanana({ imageDataUrl, prompt, apiKey }) {
  * @param {{ imageDataUrl: string, apiKey: string }} args
  * @returns {Promise<string>}
  */
-async function describeImagePrompt({ imageDataUrl, apiKey }) {
+async function describeImagePrompt({ imageDataUrl, apiKey, instruction }) {
   if (!apiKey) {
     throw new Error("GOOGLE_API_KEY is not set");
   }
@@ -98,7 +98,7 @@ async function describeImagePrompt({ imageDataUrl, apiKey }) {
       {
         role: "user",
         parts: [
-          { text: DESCRIBE_PROMPT_INSTRUCTION },
+          { text: instruction || DESCRIBE_PROMPT_INSTRUCTION },
           {
             inlineData: {
               mimeType: parsed.mimeType,
@@ -143,6 +143,44 @@ async function describeImagePrompt({ imageDataUrl, apiKey }) {
   return text;
 }
 
+/**
+ * Plain text completion (no image) via Gemini flash.
+ * @param {{ prompt: string, apiKey: string }} args
+ * @returns {Promise<string>}
+ */
+async function generateTextWithGemini({ prompt, apiKey }) {
+  if (!apiKey) {
+    throw new Error("GOOGLE_API_KEY is not set");
+  }
+  if (!prompt || typeof prompt !== "string") {
+    throw new Error("prompt is required");
+  }
+  const url = `${API_BASE}/models/${TEXT_MODEL_ID}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  let response;
+  try {
+    response = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ role: "user", parts: [{ text: prompt }] }],
+        generationConfig: { temperature: 0.3 },
+      }),
+    });
+  } catch (err) {
+    const detail = err?.cause?.message || err?.message || String(err);
+    throw new Error(`Gemini network error (${detail})`);
+  }
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(
+      payload?.error?.message || `Gemini API error (${response.status})`
+    );
+  }
+  const text = findText(payload);
+  if (!text) throw new Error("Model did not return text");
+  return text;
+}
+
 function parseDataUrl(dataUrl) {
   if (typeof dataUrl !== "string") return null;
   const match = /^data:([^;]+);base64,(.+)$/s.exec(dataUrl.trim());
@@ -181,4 +219,5 @@ module.exports = {
   DESCRIBE_PROMPT_INSTRUCTION,
   editWithNanoBanana,
   describeImagePrompt,
+  generateTextWithGemini,
 };

@@ -121,7 +121,9 @@ async function uploadDataUrlToCatbox(dataUrl) {
 }
 
 function isSupportedAspectRatio(value) {
-  return ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"].includes(value);
+  return ["21:9", "16:9", "16:10", "4:3", "1:1", "3:4", "9:16"].includes(
+    value
+  );
 }
 
 async function pollFluxTask(taskId, apiKey) {

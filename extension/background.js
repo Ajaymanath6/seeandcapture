@@ -423,7 +423,9 @@ async function addWebImageToBoard(boardId, info, tab) {
 }
 
 async function editImageViaServer(message) {
-  const isReplace = message.presetId === "replace-with-asset";
+  const isReplace =
+    message.presetId === "replace-with-asset" ||
+    message.presetId === "mashup-hybrid";
   const body = {
     imageDataUrl: message.imageDataUrl,
     presetId: message.presetId,
@@ -448,6 +450,13 @@ async function editImageViaServer(message) {
         )
       : [],
   };
+  if (
+    typeof message.aspectRatio === "string" &&
+    message.aspectRatio.trim() &&
+    message.aspectRatio.trim() !== "original"
+  ) {
+    body.aspectRatio = message.aspectRatio.trim();
+  }
 
   const response = await fetch(API_URL, {
     method: "POST",

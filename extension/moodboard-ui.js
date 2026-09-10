@@ -380,8 +380,10 @@
     }
 
     function applyGridTheme() {
-      stage.classList.toggle("is-grid-light", gridTheme === "light");
-      canvas.classList.toggle("is-grid-light", gridTheme === "light");
+      const isLight = gridTheme === "light";
+      stage.classList.toggle("is-grid-light", isLight);
+      canvas.classList.toggle("is-grid-light", isLight);
+      side.classList.toggle("is-grid-light", isLight);
       themeToggle.input.checked = gridTheme === "dark";
       themeToggle.label.textContent =
         gridTheme === "light" ? "Light grid" : "Dark grid";
