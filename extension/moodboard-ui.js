@@ -148,6 +148,14 @@
     return bentoVariants(count).length;
   }
 
+  function denseColumns(count) {
+    const n = Math.max(1, count);
+    if (n <= 9) return 3;
+    if (n <= 12) return 4;
+    if (n <= 20) return 5;
+    return Math.min(6, Math.ceil(Math.sqrt(n)));
+  }
+
   function mountMoodboardViewer(opts) {
     const {
       shadowRoot,
@@ -315,7 +323,7 @@
       row.appendChild(text);
       row.appendChild(switchEl);
       input.addEventListener("change", () => onChange(Boolean(input.checked)));
-      return { row, input };
+      return { row, input, label: text };
     }
 
     const receiveToggle = makeToggle(
@@ -327,7 +335,7 @@
       }
     );
     const themeToggle = makeToggle(
-      "Dark grid",
+      gridTheme === "light" ? "Light grid" : "Dark grid",
       gridTheme === "dark",
       (on) => {
         gridTheme = on ? "dark" : "light";
@@ -375,6 +383,8 @@
       stage.classList.toggle("is-grid-light", gridTheme === "light");
       canvas.classList.toggle("is-grid-light", gridTheme === "light");
       themeToggle.input.checked = gridTheme === "dark";
+      themeToggle.label.textContent =
+        gridTheme === "light" ? "Light grid" : "Dark grid";
     }
 
     let persistTimer = null;
@@ -403,32 +413,59 @@
 
     function applyLayout() {
       const images = current.images || [];
-      const count = Math.min(images.length, 8);
-      const variants = variantCountFor(count || 1);
-      patternIndex = ((patternIndex % variants) + variants) % variants;
-      subtitle.textContent = `${images.length} image(s)`;
-      hint.textContent =
-        images.length > 1
-          ? `Drag to swap · Pattern ${patternIndex + 1}/${variants}`
-          : "Add more captures to grow this bento grid.";
+      const total = images.length;
+      const useBento = total > 0 && total <= 8;
+      const count = useBento ? total : Math.max(total, 1);
+      const variants = useBento ? variantCountFor(count || 1) : 1;
+      if (useBento) {
+        patternIndex = ((patternIndex % variants) + variants) % variants;
+      }
+      subtitle.textContent = `${total} image(s)`;
+      if (!total) {
+        hint.textContent = "Add more captures to grow this bento grid.";
+      } else if (useBento) {
+        hint.textContent =
+          total > 1
+            ? `Drag to swap · Pattern ${patternIndex + 1}/${variants}`
+            : "Add more captures to grow this bento grid.";
+      } else {
+        hint.textContent = `All ${total} images · Drag to swap · Dense grid`;
+      }
 
-      empty.classList.toggle("is-hidden", images.length > 0);
-      grid.classList.toggle("is-hidden", images.length === 0);
-      previewActions.classList.toggle("is-hidden", images.length === 0);
+      empty.classList.toggle("is-hidden", total > 0);
+      grid.classList.toggle("is-hidden", total === 0);
+      grid.classList.toggle("is-dense", total > 8);
+      previewActions.classList.toggle("is-hidden", total === 0);
+      generateBtn.disabled = total > 8;
+      generateBtn.title =
+        total > 8
+          ? "Pattern variants are for boards with up to 8 images"
+          : "Cycle bento layout";
 
-      const tpl = bentoTemplate(count || 1, patternIndex);
-      grid.style.gridTemplateColumns = tpl.columns;
-      grid.style.gridTemplateRows = tpl.rows;
-      grid.style.gridTemplateAreas = tpl.areas.map((r) => `"${r}"`).join(" ");
+      if (useBento) {
+        const tpl = bentoTemplate(count || 1, patternIndex);
+        grid.style.gridTemplateColumns = tpl.columns;
+        grid.style.gridTemplateRows = tpl.rows;
+        grid.style.gridTemplateAreas = tpl.areas.map((r) => `"${r}"`).join(" ");
+      } else {
+        const cols = denseColumns(total);
+        grid.style.gridTemplateColumns = `repeat(${cols}, minmax(0, 1fr))`;
+        grid.style.gridTemplateRows = "";
+        grid.style.gridTemplateAreas = "";
+      }
       grid.style.gap = `${gutter}px`;
       canvas.style.setProperty("--sc-mb-radius", `${cornerRadius}px`);
       canvas.style.setProperty("--sc-mb-gutter", `${gutter}px`);
 
       grid.innerHTML = "";
-      images.slice(0, 8).forEach((img, index) => {
+      images.forEach((img, index) => {
         const tile = document.createElement("div");
         tile.className = "sc-moodboard-tile";
-        tile.style.gridArea = AREA_KEYS[index] || "a";
+        if (useBento) {
+          tile.style.gridArea = AREA_KEYS[index] || "a";
+        } else {
+          tile.style.gridArea = "";
+        }
         tile.draggable = true;
         tile.dataset.imageId = img.id;
 
@@ -501,19 +538,61 @@
     }
 
     async function renderBentoDataUrl() {
-      const images = (current.images || []).slice(0, 8);
+      const images = current.images || [];
       if (!images.length) {
         throw new Error("Nothing to render yet.");
       }
+      const useBento = images.length <= 8;
+      const cols = useBento ? null : denseColumns(images.length);
+      const rows = useBento
+        ? null
+        : Math.max(1, Math.ceil(images.length / cols));
       const W = 1600;
-      const H = 1000;
+      const H = useBento
+        ? 1000
+        : Math.max(1000, Math.round(1600 * (rows / cols) * 0.85));
       const margin = 40;
       const c = document.createElement("canvas");
       c.width = W;
       c.height = H;
       const ctx = c.getContext("2d");
-      ctx.fillStyle = "#141416";
+      ctx.fillStyle = gridTheme === "light" ? "#f7fafc" : "#0e0e10";
       ctx.fillRect(0, 0, W, H);
+
+      const loadImage = (src) =>
+        new Promise((resolve, reject) => {
+          const im = new Image();
+          im.onload = () => resolve(im);
+          im.onerror = () => reject(new Error("Image load failed"));
+          im.src = src;
+        });
+
+      const drawCover = async (imgRec, x, y, w, h) => {
+        const im = await loadImage(imgRec.dataUrl);
+        ctx.save();
+        roundRect(ctx, x, y, w, h, cornerRadius);
+        ctx.clip();
+        const scale = Math.max(w / im.width, h / im.height);
+        const dw = im.width * scale;
+        const dh = im.height * scale;
+        ctx.drawImage(im, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+        ctx.restore();
+      };
+
+      if (!useBento) {
+        const innerW = W - margin * 2;
+        const innerH = H - margin * 2;
+        const cellW = (innerW - gutter * (cols - 1)) / cols;
+        const cellH = (innerH - gutter * (rows - 1)) / rows;
+        for (let i = 0; i < images.length; i += 1) {
+          const col = i % cols;
+          const row = Math.floor(i / cols);
+          const x = margin + col * (cellW + gutter);
+          const y = margin + row * (cellH + gutter);
+          await drawCover(images[i], x, y, cellW, cellH);
+        }
+        return c.toDataURL("image/png");
+      }
 
       const tpl = bentoTemplate(images.length, patternIndex);
       const colFr = tpl.columns.split(/\s+/).map((x) => {
@@ -559,14 +638,6 @@
         });
       });
 
-      const loadImage = (src) =>
-        new Promise((resolve, reject) => {
-          const im = new Image();
-          im.onload = () => resolve(im);
-          im.onerror = () => reject(new Error("Image load failed"));
-          im.src = src;
-        });
-
       for (let i = 0; i < images.length; i += 1) {
         const key = AREA_KEYS[i];
         const box = placed.get(key);
@@ -583,15 +654,7 @@
           h += rowHeights[row];
           if (row < box.r1) h += gutter;
         }
-        const im = await loadImage(images[i].dataUrl);
-        ctx.save();
-        roundRect(ctx, x, y, w, h, cornerRadius);
-        ctx.clip();
-        const scale = Math.max(w / im.width, h / im.height);
-        const dw = im.width * scale;
-        const dh = im.height * scale;
-        ctx.drawImage(im, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
-        ctx.restore();
+        await drawCover(images[i], x, y, w, h);
       }
       return c.toDataURL("image/png");
     }
@@ -651,6 +714,10 @@
     generateBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       const images = current.images || [];
+      if (images.length > 8) {
+        applyLayout();
+        return;
+      }
       const count = Math.min(images.length, 8) || 1;
       const total = variantCountFor(count);
       patternIndex = (patternIndex + 1) % total;

@@ -33,7 +33,11 @@
   let moodboardViewerApi = null;
   let selectedAssetMeta = {};
 
-  chrome.runtime.onMessage.addListener((message) => {
+  chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === "SC_PING") {
+      sendResponse({ ok: true });
+      return;
+    }
     if (message?.type === "START_CAPTURE") {
       beginCapture();
     }
@@ -1354,16 +1358,17 @@
 
         const previews = document.createElement("div");
         previews.className = "sc-board-chip-previews";
-        (board.images || []).slice(0, 4).forEach((img) => {
+        const maxThumbs = 2;
+        (board.images || []).slice(0, maxThumbs).forEach((img) => {
           const thumb = document.createElement("img");
           thumb.src = img.dataUrl;
           thumb.alt = "";
           previews.appendChild(thumb);
         });
-        if (count > 4) {
+        if (count > maxThumbs) {
           const more = document.createElement("span");
           more.className = "sc-board-chip-more";
-          more.textContent = `+${count - 4}`;
+          more.textContent = `+${count - maxThumbs}`;
           previews.appendChild(more);
         }
 

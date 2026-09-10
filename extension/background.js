@@ -261,34 +261,157 @@ async function blobToDataUrl(blob) {
   return `data:${mime};base64,${btoa(binary)}`;
 }
 
-async function srcUrlToDataUrl(srcUrl) {
+async function ensureContentScripts(tabId) {
+  if (!tabId) return;
+  try {
+    const res = await chrome.tabs.sendMessage(tabId, { type: "SC_PING" });
+    if (res?.ok) return;
+  } catch (_err) {
+    // Not injected yet.
+  }
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: CONTENT_FILES,
+  });
+}
+
+async function srcUrlToDataUrlFromTab(tabId, srcUrl) {
+  if (!tabId) throw new Error("No tab for image fetch");
+  await ensureContentScripts(tabId);
+  const inject = {
+    target: { tabId },
+    func: async (url) => {
+      const toDataUrl = (blob) =>
+        new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(reader.result);
+          reader.onerror = () => reject(new Error("Could not read image"));
+          reader.readAsDataURL(blob);
+        });
+
+      const tryFetch = async (credentials) => {
+        const response = await fetch(url, {
+          credentials,
+          cache: "force-cache",
+        });
+        if (!response.ok) {
+          throw new Error(`Could not fetch image (${response.status})`);
+        }
+        const blob = await response.blob();
+        const type = String(blob.type || "");
+        if (type && !type.startsWith("image/")) {
+          throw new Error("Target was not an image");
+        }
+        return toDataUrl(blob);
+      };
+
+      try {
+        return await tryFetch("include");
+      } catch (_a) {
+        try {
+          return await tryFetch("omit");
+        } catch (_b) {
+          // Fall through to canvas / DOM img.
+        }
+      }
+
+      const fromImageElement = (img) =>
+        new Promise((resolve, reject) => {
+          const draw = () => {
+            try {
+              const c = document.createElement("canvas");
+              const w = img.naturalWidth || img.width;
+              const h = img.naturalHeight || img.height;
+              if (!w || !h) {
+                reject(new Error("Image has no dimensions"));
+                return;
+              }
+              c.width = w;
+              c.height = h;
+              c.getContext("2d").drawImage(img, 0, 0);
+              resolve(c.toDataURL("image/png"));
+            } catch (err) {
+              reject(err);
+            }
+          };
+          if (img.complete && (img.naturalWidth || img.width)) {
+            draw();
+            return;
+          }
+          img.addEventListener("load", draw, { once: true });
+          img.addEventListener(
+            "error",
+            () => reject(new Error("Image load failed")),
+            { once: true }
+          );
+        });
+
+      const existing = Array.from(document.images || []).find(
+        (el) => el.currentSrc === url || el.src === url
+      );
+      if (existing) {
+        try {
+          return await fromImageElement(existing);
+        } catch (_err) {
+          // Continue with a fresh Image.
+        }
+      }
+
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.src = url;
+      return fromImageElement(img);
+    },
+    args: [srcUrl],
+  };
+
+  let results;
+  try {
+    results = await chrome.scripting.executeScript({
+      ...inject,
+      world: "MAIN",
+    });
+  } catch (_err) {
+    results = await chrome.scripting.executeScript(inject);
+  }
+  const dataUrl = results?.[0]?.result;
+  if (!dataUrl || typeof dataUrl !== "string") {
+    throw new Error("Could not read image from page");
+  }
+  return dataUrl;
+}
+
+async function srcUrlToDataUrl(srcUrl, tabId) {
   if (!srcUrl) throw new Error("No image URL");
   if (srcUrl.startsWith("data:image/")) return srcUrl;
   if (srcUrl.startsWith("blob:")) {
-    throw new Error("Blob image URLs cannot be fetched from the extension");
+    return srcUrlToDataUrlFromTab(tabId, srcUrl);
   }
-  const response = await fetch(srcUrl, { credentials: "omit" });
-  if (!response.ok) {
-    throw new Error(`Could not fetch image (${response.status})`);
+
+  try {
+    const response = await fetch(srcUrl, { credentials: "omit" });
+    if (!response.ok) {
+      throw new Error(`Could not fetch image (${response.status})`);
+    }
+    const blob = await response.blob();
+    if (!String(blob.type || "").startsWith("image/")) {
+      throw new Error("Target was not an image");
+    }
+    return blobToDataUrl(blob);
+  } catch (err) {
+    if (!tabId) throw err;
+    return srcUrlToDataUrlFromTab(tabId, srcUrl);
   }
-  const blob = await response.blob();
-  if (!String(blob.type || "").startsWith("image/")) {
-    throw new Error("Target was not an image");
-  }
-  return blobToDataUrl(blob);
 }
 
 async function addWebImageToBoard(boardId, info, tab) {
-  const dataUrl = await srcUrlToDataUrl(info.srcUrl);
+  const dataUrl = await srcUrlToDataUrl(info.srcUrl, tab?.id);
   await store.addImage(boardId, dataUrl);
   await syncReceiversFromStore();
 
   if (tab?.id) {
     try {
-      await chrome.scripting.executeScript({
-        target: { tabId: tab.id },
-        files: CONTENT_FILES,
-      });
+      await ensureContentScripts(tab.id);
       await chrome.tabs.sendMessage(tab.id, {
         type: "MOODBOARD_BOARD_UPDATED",
         boardId,
@@ -346,10 +469,7 @@ async function editImageViaServer(message) {
 
 async function startCapture(tabId) {
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: CONTENT_FILES,
-    });
+    await ensureContentScripts(tabId);
     await chrome.tabs.sendMessage(tabId, { type: "START_CAPTURE" });
   } catch (err) {
     console.error("See & Capture: failed to start", err);
@@ -358,10 +478,7 @@ async function startCapture(tabId) {
 
 async function openLastModal(tabId) {
   try {
-    await chrome.scripting.executeScript({
-      target: { tabId },
-      files: CONTENT_FILES,
-    });
+    await ensureContentScripts(tabId);
     await chrome.tabs.sendMessage(tabId, { type: "OPEN_LAST_MODAL" });
   } catch (err) {
     console.error("See & Capture: failed to open modal", err);
