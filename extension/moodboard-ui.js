@@ -290,6 +290,18 @@
       persistSettings();
     });
 
+    let receiveFromWeb = Boolean(current.settings?.receiveFromWeb);
+
+    const receiveRow = document.createElement("label");
+    receiveRow.className = "sc-moodboard-receive";
+    const receiveCheck = document.createElement("input");
+    receiveCheck.type = "checkbox";
+    receiveCheck.checked = receiveFromWeb;
+    const receiveText = document.createElement("span");
+    receiveText.textContent = "Receive web images";
+    receiveRow.appendChild(receiveCheck);
+    receiveRow.appendChild(receiveText);
+
     const hint = document.createElement("p");
     hint.className = "sc-moodboard-hint";
 
@@ -298,6 +310,7 @@
     side.appendChild(exportBtn);
     side.appendChild(gutterSlider);
     side.appendChild(radiusSlider);
+    side.appendChild(receiveRow);
     side.appendChild(hint);
     if (!embedded) {
       side.appendChild(closeBtn);
@@ -307,6 +320,21 @@
     shell.appendChild(side);
     overlay.appendChild(shell);
     mountParent.appendChild(overlay);
+
+    function syncReceiverMenus() {
+      try {
+        chrome.runtime.sendMessage({
+          type: "UPSERT_MOODBOARD_RECEIVER",
+          board: {
+            id: current.id,
+            name: current.name || "Moodboard",
+            receiveFromWeb,
+          },
+        });
+      } catch (err) {
+        console.error(err);
+      }
+    }
 
     let persistTimer = null;
     function persistSettings() {
@@ -319,13 +347,20 @@
             gutter,
             cornerRadius,
             patternIndex,
+            receiveFromWeb,
           });
           onBoardUpdated?.(current);
+          syncReceiverMenus();
         } catch (err) {
           console.error(err);
         }
       }, 250);
     }
+
+    receiveCheck.addEventListener("change", () => {
+      receiveFromWeb = Boolean(receiveCheck.checked);
+      persistSettings();
+    });
 
     function applyLayout() {
       const images = current.images || [];
@@ -603,9 +638,12 @@
         gutter = Number(current.settings?.gutter) || gutter;
         cornerRadius = Number(current.settings?.cornerRadius) || cornerRadius;
         patternIndex = Number(current.settings?.patternIndex) || patternIndex;
+        receiveFromWeb = Boolean(current.settings?.receiveFromWeb);
+        receiveCheck.checked = receiveFromWeb;
         title.textContent = current.name || "Moodboard";
         applyLayout();
       },
+      getBoardId: () => current.id,
     };
   }
 

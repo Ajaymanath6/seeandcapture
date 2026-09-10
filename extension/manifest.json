@@ -1,21 +1,32 @@
 {
   "manifest_version": 3,
   "name": "See & Capture",
-  "version": "1.6.1",
+  "version": "1.7.1",
   "description": "Capture a region, prompt-edit with assets, save to folder or moodboards.",
   "permissions": [
     "activeTab",
     "tabs",
     "storage",
+    "unlimitedStorage",
     "contextMenus",
     "scripting"
   ],
   "host_permissions": [
+    "<all_urls>",
     "http://127.0.0.1:8787/*",
     "http://localhost:8787/*"
   ],
   "background": {
     "service_worker": "background.js"
+  },
+  "commands": {
+    "start-capture": {
+      "suggested_key": {
+        "default": "Alt+S",
+        "mac": "Alt+S"
+      },
+      "description": "Open See & Capture"
+    }
   },
   "action": {
     "default_title": "See and Capture \u2014 select area",

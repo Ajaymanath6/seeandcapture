@@ -1,274 +1,115 @@
 /**
- * IndexedDB moodboards (bento collections of captured images).
+ * Moodboards RPC client (content script).
+ * Persists via extension service worker IndexedDB.
  * Exposed as window.SeeCaptureMoodboards
- * Shares DB "seeandcapture" with assets (version 3+).
  */
 (() => {
-  const DB_NAME = "seeandcapture";
-  const DB_VERSION = 3;
-  const STORE = "moodboards";
-
   const DEFAULT_SETTINGS = {
     gutter: 16,
     cornerRadius: 28,
+    receiveFromWeb: false,
   };
 
-  function openDb() {
+  function call(type, payload) {
     return new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, DB_VERSION);
-      request.onupgradeneeded = () => {
-        const db = request.result;
-        if (!db.objectStoreNames.contains("assets")) {
-          const assets = db.createObjectStore("assets", { keyPath: "id" });
-          assets.createIndex("createdAt", "createdAt", { unique: false });
-          assets.createIndex("name", "name", { unique: false });
-          assets.createIndex("kind", "kind", { unique: false });
-        }
-        if (!db.objectStoreNames.contains(STORE)) {
-          const store = db.createObjectStore(STORE, { keyPath: "id" });
-          store.createIndex("updatedAt", "updatedAt", { unique: false });
-          store.createIndex("lastOpenedAt", "lastOpenedAt", { unique: false });
-        }
-      };
-      request.onsuccess = () => resolve(request.result);
-      request.onerror = () =>
-        reject(request.error || new Error("IndexedDB open failed"));
-    });
-  }
-
-  function newId(prefix) {
-    if (typeof crypto !== "undefined" && crypto.randomUUID) {
-      return crypto.randomUUID();
-    }
-    return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  }
-
-  async function withStore(mode, fn) {
-    const db = await openDb();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, mode);
-      const store = tx.objectStore(STORE);
-      let result;
       try {
-        result = fn(store);
+        chrome.runtime.sendMessage({ type, ...(payload || {}) }, (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          if (!response || response.ok === false) {
+            reject(new Error(response?.error || "Moodboard request failed"));
+            return;
+          }
+          resolve(response.result);
+        });
       } catch (err) {
         reject(err);
-        return;
       }
-      tx.oncomplete = () => {
-        db.close();
-        resolve(result);
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error || new Error("IndexedDB transaction failed"));
-      };
     });
   }
 
   async function listMoodboards() {
-    const db = await openDb();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, "readonly");
-      const store = tx.objectStore(STORE);
-      const request = store.getAll();
-      request.onsuccess = () => {
-        const rows = (request.result || []).slice().sort((a, b) => {
-          const aT = a.lastOpenedAt || a.updatedAt || 0;
-          const bT = b.lastOpenedAt || b.updatedAt || 0;
-          return bT - aT;
-        });
-        db.close();
-        resolve(rows);
-      };
-      request.onerror = () => {
-        db.close();
-        reject(request.error);
-      };
-    });
+    return (await call("MOODBOARD_LIST")) || [];
   }
 
   async function getMoodboard(id) {
-    const db = await openDb();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, "readonly");
-      const store = tx.objectStore(STORE);
-      const request = store.get(id);
-      request.onsuccess = () => {
-        db.close();
-        resolve(request.result || null);
-      };
-      request.onerror = () => {
-        db.close();
-        reject(request.error);
-      };
-    });
+    return call("MOODBOARD_GET", { id });
   }
 
   async function getLastMoodboard() {
-    const list = await listMoodboards();
-    return list[0] || null;
+    return call("MOODBOARD_GET_LAST");
   }
 
   async function createMoodboard(name) {
-    const now = Date.now();
-    const record = {
-      id: newId("moodboard"),
-      name: String(name || "").trim() || "Untitled moodboard",
-      createdAt: now,
-      updatedAt: now,
-      lastOpenedAt: now,
-      settings: { ...DEFAULT_SETTINGS },
-      images: [],
-    };
-    await withStore("readwrite", (store) => {
-      store.put(record);
-    });
-    return record;
+    return call("MOODBOARD_CREATE", { name });
   }
 
   async function addImage(boardId, dataUrl) {
-    if (!dataUrl) throw new Error("Image is required");
-    const db = await openDb();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      const store = tx.objectStore(STORE);
-      const request = store.get(boardId);
-      request.onsuccess = () => {
-        const board = request.result;
-        if (!board) {
-          reject(new Error("Moodboard not found"));
-          return;
-        }
-        const image = {
-          id: newId("mbimg"),
-          dataUrl,
-          addedAt: Date.now(),
-        };
-        board.images = Array.isArray(board.images) ? board.images : [];
-        board.images.push(image);
-        board.updatedAt = Date.now();
-        board.lastOpenedAt = board.updatedAt;
-        store.put(board);
-        tx.oncomplete = () => {
-          db.close();
-          resolve(board);
-        };
-      };
-      request.onerror = () => {
-        db.close();
-        reject(request.error);
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-    });
+    return call("MOODBOARD_ADD_IMAGE", { boardId, dataUrl });
   }
 
   async function updateSettings(boardId, settings) {
-    const db = await openDb();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      const store = tx.objectStore(STORE);
-      const request = store.get(boardId);
-      request.onsuccess = () => {
-        const board = request.result;
-        if (!board) {
-          reject(new Error("Moodboard not found"));
-          return;
-        }
-        board.settings = {
-          ...DEFAULT_SETTINGS,
-          ...(board.settings || {}),
-          ...(settings || {}),
-        };
-        board.updatedAt = Date.now();
-        store.put(board);
-        tx.oncomplete = () => {
-          db.close();
-          resolve(board);
-        };
-      };
-      request.onerror = () => {
-        db.close();
-        reject(request.error);
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-    });
+    return call("MOODBOARD_UPDATE_SETTINGS", { boardId, settings });
   }
 
   async function reorderImages(boardId, orderedIds) {
-    const db = await openDb();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      const store = tx.objectStore(STORE);
-      const request = store.get(boardId);
-      request.onsuccess = () => {
-        const board = request.result;
-        if (!board) {
-          reject(new Error("Moodboard not found"));
-          return;
-        }
-        const byId = new Map((board.images || []).map((img) => [img.id, img]));
-        const next = [];
-        (orderedIds || []).forEach((id) => {
-          if (byId.has(id)) {
-            next.push(byId.get(id));
-            byId.delete(id);
-          }
-        });
-        byId.forEach((img) => next.push(img));
-        board.images = next;
-        board.updatedAt = Date.now();
-        store.put(board);
-        tx.oncomplete = () => {
-          db.close();
-          resolve(board);
-        };
-      };
-      request.onerror = () => {
-        db.close();
-        reject(request.error);
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
-    });
+    return call("MOODBOARD_REORDER", { boardId, orderedIds });
   }
 
   async function touchOpened(boardId) {
-    const db = await openDb();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE, "readwrite");
-      const store = tx.objectStore(STORE);
-      const request = store.get(boardId);
-      request.onsuccess = () => {
-        const board = request.result;
-        if (!board) {
-          reject(new Error("Moodboard not found"));
-          return;
-        }
-        board.lastOpenedAt = Date.now();
-        store.put(board);
-        tx.oncomplete = () => {
-          db.close();
-          resolve(board);
+    return call("MOODBOARD_TOUCH", { boardId });
+  }
+
+  function readPageOriginMoodboards() {
+    return new Promise((resolve) => {
+      try {
+        const request = indexedDB.open("seeandcapture");
+        request.onerror = () => resolve([]);
+        request.onsuccess = () => {
+          const db = request.result;
+          if (!db.objectStoreNames.contains("moodboards")) {
+            db.close();
+            resolve([]);
+            return;
+          }
+          const tx = db.transaction("moodboards", "readonly");
+          const store = tx.objectStore("moodboards");
+          const getAll = store.getAll();
+          getAll.onsuccess = () => {
+            const rows = getAll.result || [];
+            db.close();
+            resolve(rows);
+          };
+          getAll.onerror = () => {
+            db.close();
+            resolve([]);
+          };
         };
-      };
-      request.onerror = () => {
-        db.close();
-        reject(request.error);
-      };
-      tx.onerror = () => {
-        db.close();
-        reject(tx.error);
-      };
+      } catch (_err) {
+        resolve([]);
+      }
     });
+  }
+
+  async function migrateFromPageIfNeeded() {
+    try {
+      const flag = await chrome.storage.local.get({ moodboardMigrated: false });
+      if (flag.moodboardMigrated) return;
+      const existing = await listMoodboards();
+      if (existing.length > 0) {
+        await chrome.storage.local.set({ moodboardMigrated: true });
+        return;
+      }
+      const pageBoards = await readPageOriginMoodboards();
+      if (pageBoards.length) {
+        await call("MOODBOARD_IMPORT", { boards: pageBoards });
+      }
+      await chrome.storage.local.set({ moodboardMigrated: true });
+    } catch (err) {
+      console.error("See & Capture: moodboard migrate failed", err);
+    }
   }
 
   window.SeeCaptureMoodboards = {
@@ -281,5 +122,8 @@
     updateSettings,
     reorderImages,
     touchOpened,
+    migrateFromPageIfNeeded,
   };
+
+  migrateFromPageIfNeeded().catch(() => {});
 })();

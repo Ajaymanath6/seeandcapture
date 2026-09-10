@@ -29,12 +29,70 @@
   let applyBtnRef = null;
   let assetCountEl = null;
   let assetsPanelEl = null;
+  let moodboardViewerApi = null;
 
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === "START_CAPTURE") {
       beginCapture();
     }
+    if (message?.type === "MOODBOARD_INBOX_UPDATED") {
+      flushMoodboardInboxAndRefresh().catch((err) => console.error(err));
+    }
+    if (message?.type === "MOODBOARD_BOARD_UPDATED") {
+      refreshOpenMoodboard(message.boardId).catch((err) => console.error(err));
+    }
   });
+
+  async function syncMoodboardReceiversFromDb() {
+    try {
+      await window.SeeCaptureMoodboards?.migrateFromPageIfNeeded?.();
+      await chrome.runtime.sendMessage({
+        type: "SYNC_MOODBOARD_RECEIVE_MENUS",
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  }
+
+  async function flushMoodboardInbox() {
+    const api = window.SeeCaptureMoodboards;
+    if (!api?.addImage) return [];
+    const data = await chrome.storage.local.get({ moodboardInbox: [] });
+    const inbox = Array.isArray(data.moodboardInbox) ? data.moodboardInbox : [];
+    if (!inbox.length) return [];
+
+    const remaining = [];
+    const touched = new Set();
+    for (const item of inbox) {
+      if (!item?.boardId || !item?.dataUrl) continue;
+      try {
+        await api.addImage(item.boardId, item.dataUrl);
+        touched.add(item.boardId);
+      } catch (err) {
+        console.error(err);
+        remaining.push(item);
+      }
+    }
+    await chrome.storage.local.set({ moodboardInbox: remaining });
+    return [...touched];
+  }
+
+  async function refreshOpenMoodboard(boardId) {
+    const openId = moodboardViewerApi?.getBoardId?.();
+    if (!openId || (boardId && openId !== boardId)) return;
+    if (!window.SeeCaptureMoodboards?.getMoodboard) return;
+    const board = await window.SeeCaptureMoodboards.getMoodboard(openId);
+    if (board) moodboardViewerApi.refresh?.(board);
+  }
+
+  async function flushMoodboardInboxAndRefresh() {
+    const touched = await flushMoodboardInbox();
+    if (!touched.length) return;
+    const openId = moodboardViewerApi?.getBoardId?.();
+    if (openId && touched.includes(openId)) {
+      await refreshOpenMoodboard(openId);
+    }
+  }
 
   function beginCapture() {
     if (capturing || modalOpen) return;
@@ -416,6 +474,7 @@
       let boards = [];
       try {
         boards = (await window.SeeCaptureMoodboards?.listMoodboards?.()) || [];
+        await syncMoodboardReceiversFromDb();
       } catch (err) {
         console.error(err);
       }
@@ -649,9 +708,14 @@
     const assetsBtn = document.createElement("button");
     assetsBtn.type = "button";
     assetsBtn.className = "sc-composer-btn";
-    assetsBtn.textContent = "Add assets";
+    assetsBtn.appendChild(materialIcon("add", "sc-btn-icon"));
+    const assetsBtnLabel = document.createElement("span");
+    assetsBtnLabel.textContent = "Add assets";
+    assetsBtn.appendChild(assetsBtnLabel);
     assetCountEl = document.createElement("span");
-    assetCountEl.className = "sc-asset-count";
+    assetCountEl.className = "sc-asset-count is-empty";
+    assetCountEl.setAttribute("aria-hidden", "true");
+    assetsBtn.appendChild(assetCountEl);
     updateAssetCountLabel();
 
     const panel = document.createElement("div");
@@ -670,6 +734,9 @@
     brandTab.textContent = "Color / Brand";
     tabRow.appendChild(imagesTab);
     tabRow.appendChild(brandTab);
+    const tabDivider = document.createElement("div");
+    tabDivider.className = "sc-assets-panel-divider";
+    tabDivider.setAttribute("aria-hidden", "true");
 
     const list = document.createElement("div");
     list.className = "sc-assets-panel-list";
@@ -691,7 +758,9 @@
         const addRow = document.createElement("button");
         addRow.type = "button";
         addRow.className = "sc-assets-panel-add";
-        addRow.textContent = "Add image…";
+        addRow.setAttribute("aria-label", "Add image");
+        addRow.title = "Add image";
+        addRow.appendChild(materialIcon("add"));
         addRow.addEventListener("click", (e) => {
           e.stopPropagation();
           fileInput.click();
@@ -710,9 +779,10 @@
         return;
       }
       assets.forEach((asset) => {
-        const item = document.createElement("button");
-        item.type = "button";
+        const item = document.createElement("div");
         item.className = "sc-asset-thumb";
+        item.setAttribute("role", "button");
+        item.tabIndex = 0;
         if (selectedAssetIds.includes(asset.id)) item.classList.add("is-selected");
         item.title = asset.name || asset.id;
         if (asset.kind === "palette") {
@@ -735,8 +805,31 @@
           img.alt = asset.name || "Asset";
           img.src = asset.dataUrl;
           item.appendChild(img);
+
+          const removeBtn = document.createElement("button");
+          removeBtn.type = "button";
+          removeBtn.className = "sc-asset-del";
+          removeBtn.setAttribute("aria-label", "Remove image");
+          removeBtn.title = "Remove";
+          removeBtn.appendChild(materialIcon("close"));
+          removeBtn.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            try {
+              if (!window.SeeCaptureAssets?.deleteAsset) {
+                throw new Error("Assets unavailable");
+              }
+              await window.SeeCaptureAssets.deleteAsset(asset.id);
+              selectedAssetIds = selectedAssetIds.filter((id) => id !== asset.id);
+              updateAssetCountLabel();
+              await refreshPanel();
+            } catch (err) {
+              alert(err?.message || "Could not remove asset");
+            }
+          });
+          item.appendChild(removeBtn);
         }
-        item.addEventListener("click", (e) => {
+        const toggleSelect = (e) => {
           e.stopPropagation();
           if (selectedAssetIds.includes(asset.id)) {
             selectedAssetIds = selectedAssetIds.filter((id) => id !== asset.id);
@@ -745,6 +838,13 @@
           }
           updateAssetCountLabel();
           refreshPanel();
+        };
+        item.addEventListener("click", toggleSelect);
+        item.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            toggleSelect(e);
+          }
         });
         list.appendChild(item);
       });
@@ -795,9 +895,9 @@
     });
 
     panel.appendChild(tabRow);
+    panel.appendChild(tabDivider);
     panel.appendChild(list);
     assetsWrap.appendChild(assetsBtn);
-    assetsWrap.appendChild(assetCountEl);
     assetsWrap.appendChild(panel);
     assetsWrap.appendChild(fileInput);
 
@@ -947,8 +1047,9 @@
   function updateAssetCountLabel() {
     if (!assetCountEl) return;
     const n = selectedAssetIds.length;
-    assetCountEl.textContent = n ? `${n} selected` : "";
+    assetCountEl.textContent = n ? String(n) : "";
     assetCountEl.classList.toggle("is-empty", !n);
+    assetCountEl.setAttribute("aria-hidden", n ? "false" : "true");
   }
 
   async function runPromptApply(rightWrap) {
@@ -1043,6 +1144,7 @@
     modalRef
       .querySelectorAll(".sc-boards-view, .sc-moodboard")
       .forEach((el) => el.remove());
+    moodboardViewerApi = null;
   }
 
   function restoreCaptureView() {
@@ -1054,8 +1156,11 @@
   async function showMoodboardsPanel() {
     if (!modalRef) return;
     clearModalSubviews();
+    moodboardViewerApi = null;
     hideCaptureChrome();
     showHeaderBack(() => restoreCaptureView());
+
+    await flushMoodboardInbox();
 
     const view = document.createElement("div");
     view.className = "sc-boards-view";
@@ -1121,6 +1226,7 @@
     let boards = [];
     try {
       boards = (await window.SeeCaptureMoodboards?.listMoodboards?.()) || [];
+      await syncMoodboardReceiversFromDb();
     } catch (err) {
       console.error(err);
     }
@@ -1247,6 +1353,8 @@
       return;
     }
     try {
+      await flushMoodboardInbox();
+      await syncMoodboardReceiversFromDb();
       const board = await api.getMoodboard(boardId);
       if (!board) {
         alert("Moodboard not found.");
@@ -1254,8 +1362,11 @@
       }
       clearModalSubviews();
       hideCaptureChrome();
-      showHeaderBack(() => restoreCaptureView());
-      ui.mountMoodboardViewer({
+      showHeaderBack(() => {
+        moodboardViewerApi = null;
+        restoreCaptureView();
+      });
+      moodboardViewerApi = ui.mountMoodboardViewer({
         hostEl: modalRef,
         embedded: true,
         board,
@@ -1263,8 +1374,14 @@
         saveDataUrl: (url) => saveImageToComputer(null, url),
         openPreview: (url) =>
           openImagePreview(url, { mode: "preview", target: "none" }),
-        onClose: () => restoreCaptureView(),
-        onBack: () => restoreCaptureView(),
+        onClose: () => {
+          moodboardViewerApi = null;
+          restoreCaptureView();
+        },
+        onBack: () => {
+          moodboardViewerApi = null;
+          restoreCaptureView();
+        },
       });
     } catch (err) {
       console.error(err);
