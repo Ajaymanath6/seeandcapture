@@ -35,6 +35,9 @@
     if (message?.type === "START_CAPTURE") {
       beginCapture();
     }
+    if (message?.type === "OPEN_LAST_MODAL") {
+      openLastModalFromStorage().catch((err) => console.error(err));
+    }
     if (message?.type === "MOODBOARD_INBOX_UPDATED") {
       flushMoodboardInboxAndRefresh().catch((err) => console.error(err));
     }
@@ -99,6 +102,40 @@
     capturing = true;
     ensureHost();
     showCaptureOverlay();
+  }
+
+  async function openLastModalFromStorage() {
+    if (capturing || modalOpen) return;
+    try {
+      const data = await chrome.storage.local.get({ lastResult: null });
+      const last = data.lastResult || null;
+      const dataUrl =
+        (last && (last.resultDataUrl || last.captureDataUrl)) || null;
+      if (!dataUrl) {
+        alert(
+          "Nothing to open yet. Press Alt+C (or use See & Capture) to capture an area first."
+        );
+        return;
+      }
+      ensureHost();
+      showModal(dataUrl);
+    } catch (err) {
+      console.error(err);
+      alert(err?.message || "Could not open the last capture.");
+    }
+  }
+
+  function persistLastCapture(captureDataUrl, resultUrl) {
+    try {
+      chrome.runtime.sendMessage({
+        type: "SAVE_RESULT",
+        presetId: null,
+        captureDataUrl: captureDataUrl || null,
+        resultDataUrl: resultUrl || null,
+      });
+    } catch (err) {
+      console.error(err);
+    }
   }
 
   function ensureHost() {
@@ -245,6 +282,7 @@
         if (activeHost) activeHost.style.visibility = "";
         croppedDataUrl = await cropDataUrl(dataUrl, rect);
         capturing = false;
+        persistLastCapture(croppedDataUrl, null);
         showModal(croppedDataUrl);
       } catch (err) {
         if (activeHost) activeHost.style.visibility = "";

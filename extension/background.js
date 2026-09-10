@@ -30,15 +30,18 @@ chrome.runtime.onStartup.addListener(() => {
 });
 
 chrome.commands.onCommand.addListener((command, tab) => {
-  if (command !== "start-capture") return;
+  const run = (tabId) => {
+    if (command === "start-capture") startCapture(tabId);
+    else if (command === "open-modal") openLastModal(tabId);
+  };
   const tabId = tab?.id;
   if (tabId) {
-    startCapture(tabId);
+    run(tabId);
     return;
   }
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const id = tabs?.[0]?.id;
-    if (id) startCapture(id);
+    if (id) run(id);
   });
 });
 
@@ -208,6 +211,19 @@ async function rebuildContextMenus() {
   await chrome.contextMenus.removeAll();
 
   const pageContexts = ["page", "selection", "image", "video", "link"];
+  const data = await chrome.storage.local.get({ moodboardReceivers: [] });
+  const receivers = Array.isArray(data.moodboardReceivers)
+    ? data.moodboardReceivers
+    : [];
+
+  if (!receivers.length) {
+    chrome.contextMenus.create({
+      id: CONTEXT_MENU_SELECT,
+      title: "See & Capture",
+      contexts: pageContexts,
+    });
+    return;
+  }
 
   chrome.contextMenus.create({
     id: CONTEXT_MENU_ROOT,
@@ -222,10 +238,6 @@ async function rebuildContextMenus() {
     contexts: pageContexts,
   });
 
-  const data = await chrome.storage.local.get({ moodboardReceivers: [] });
-  const receivers = Array.isArray(data.moodboardReceivers)
-    ? data.moodboardReceivers
-    : [];
   receivers.forEach((board) => {
     if (!board?.id) return;
     const name = String(board.name || "Moodboard").slice(0, 48);
@@ -345,5 +357,17 @@ async function startCapture(tabId) {
     await chrome.tabs.sendMessage(tabId, { type: "START_CAPTURE" });
   } catch (err) {
     console.error("See & Capture: failed to start", err);
+  }
+}
+
+async function openLastModal(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: CONTENT_FILES,
+    });
+    await chrome.tabs.sendMessage(tabId, { type: "OPEN_LAST_MODAL" });
+  } catch (err) {
+    console.error("See & Capture: failed to open modal", err);
   }
 }

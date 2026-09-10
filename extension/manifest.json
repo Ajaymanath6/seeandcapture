@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "See & Capture",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "description": "Capture a region, prompt-edit with assets, save to folder or moodboards.",
   "permissions": [
     "activeTab",
@@ -20,12 +20,19 @@
     "service_worker": "background.js"
   },
   "commands": {
+    "open-modal": {
+      "suggested_key": {
+        "default": "Alt+M",
+        "mac": "Alt+M"
+      },
+      "description": "Open See & Capture modal"
+    },
     "start-capture": {
       "suggested_key": {
-        "default": "Alt+S",
-        "mac": "Alt+S"
+        "default": "Alt+C",
+        "mac": "Alt+C"
       },
-      "description": "Open See & Capture"
+      "description": "Select area to capture"
     }
   },
   "action": {
