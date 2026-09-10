@@ -28,8 +28,10 @@
   let promptInputRef = null;
   let applyBtnRef = null;
   let assetCountEl = null;
+  let assetBadgesEl = null;
   let assetsPanelEl = null;
   let moodboardViewerApi = null;
+  let selectedAssetMeta = {};
 
   chrome.runtime.onMessage.addListener((message) => {
     if (message?.type === "START_CAPTURE") {
@@ -191,6 +193,7 @@
     pageContext = {};
     contextEnabled = false;
     selectedAssetIds = [];
+    selectedAssetMeta = {};
     leftWrapRef = null;
     rightWrapRef = null;
     selectedPane = "capture";
@@ -203,6 +206,7 @@
     promptInputRef = null;
     applyBtnRef = null;
     assetCountEl = null;
+    assetBadgesEl = null;
     assetsPanelEl = null;
   }
 
@@ -416,6 +420,7 @@
     resultDataUrl = null;
     croppedDataUrl = captureDataUrl || null;
     selectedAssetIds = [];
+    selectedAssetMeta = {};
     contextEnabled = false;
     clearShadowUi();
 
@@ -446,7 +451,7 @@
 
     const brand = document.createElement("div");
     brand.className = "sc-header-brand";
-    brand.setAttribute("aria-label", "See and Capture");
+    brand.setAttribute("aria-label", "See & Capture");
 
     const logo = document.createElement("img");
     logo.className = "sc-header-logo";
@@ -460,7 +465,11 @@
     seePart.className = "sc-header-wordmark-see";
     seePart.textContent = "See";
     wordmark.appendChild(seePart);
-    wordmark.appendChild(document.createTextNode(" and "));
+    const ampPart = document.createElement("span");
+    ampPart.className = "sc-header-wordmark-amp";
+    ampPart.textContent = " & ";
+    ampPart.setAttribute("aria-hidden", "true");
+    wordmark.appendChild(ampPart);
     const captureEm = document.createElement("em");
     captureEm.textContent = "Capture";
     wordmark.appendChild(captureEm);
@@ -733,6 +742,11 @@
     const field = document.createElement("div");
     field.className = "sc-composer-field";
 
+    const badges = document.createElement("div");
+    badges.className = "sc-composer-asset-badges is-empty";
+    badges.setAttribute("aria-label", "Selected assets");
+    assetBadgesEl = badges;
+
     const input = document.createElement("textarea");
     input.className = "sc-composer-input";
     input.rows = 2;
@@ -749,7 +763,7 @@
     assetsBtn.className = "sc-composer-btn";
     assetsBtn.appendChild(materialIcon("add", "sc-btn-icon"));
     const assetsBtnLabel = document.createElement("span");
-    assetsBtnLabel.textContent = "Add assets";
+    assetsBtnLabel.textContent = "Load assets";
     assetsBtn.appendChild(assetsBtnLabel);
     assetCountEl = document.createElement("span");
     assetCountEl.className = "sc-asset-count is-empty";
@@ -823,7 +837,13 @@
         item.setAttribute("role", "button");
         item.tabIndex = 0;
         if (selectedAssetIds.includes(asset.id)) item.classList.add("is-selected");
-        item.title = asset.name || asset.id;
+        const hintLabel =
+          asset.kind === "palette"
+            ? "Click to add this palette"
+            : "Click to add this asset";
+        item.title = selectedAssetIds.includes(asset.id)
+          ? `${asset.name || asset.id} (selected)`
+          : hintLabel;
         if (asset.kind === "palette") {
           item.classList.add("is-palette");
           const swatches = document.createElement("div");
@@ -860,6 +880,7 @@
               }
               await window.SeeCaptureAssets.deleteAsset(asset.id);
               selectedAssetIds = selectedAssetIds.filter((id) => id !== asset.id);
+              delete selectedAssetMeta[asset.id];
               updateAssetCountLabel();
               await refreshPanel();
             } catch (err) {
@@ -868,12 +889,23 @@
           });
           item.appendChild(removeBtn);
         }
+        const hoverHint = document.createElement("span");
+        hoverHint.className = "sc-asset-hover-hint";
+        hoverHint.textContent = selectedAssetIds.includes(asset.id)
+          ? "Selected"
+          : "Click to add";
+        item.appendChild(hoverHint);
         const toggleSelect = (e) => {
           e.stopPropagation();
           if (selectedAssetIds.includes(asset.id)) {
             selectedAssetIds = selectedAssetIds.filter((id) => id !== asset.id);
+            delete selectedAssetMeta[asset.id];
           } else {
             selectedAssetIds = [...selectedAssetIds, asset.id];
+            selectedAssetMeta[asset.id] = {
+              name: asset.name || (asset.kind === "palette" ? "Palette" : "Asset"),
+              kind: asset.kind || "image",
+            };
           }
           updateAssetCountLabel();
           refreshPanel();
@@ -1038,10 +1070,12 @@
     toolbar.appendChild(assetsWrap);
     toolbar.appendChild(aspectWrap);
     toolbar.appendChild(applyBtn);
+    field.appendChild(badges);
     field.appendChild(input);
     field.appendChild(toolbar);
     composer.appendChild(quick);
     composer.appendChild(field);
+    updateAssetCountLabel();
     return composer;
   }
 
@@ -1084,11 +1118,27 @@
   }
 
   function updateAssetCountLabel() {
-    if (!assetCountEl) return;
-    const n = selectedAssetIds.length;
-    assetCountEl.textContent = n ? String(n) : "";
-    assetCountEl.classList.toggle("is-empty", !n);
-    assetCountEl.setAttribute("aria-hidden", n ? "false" : "true");
+    if (assetCountEl) {
+      const n = selectedAssetIds.length;
+      assetCountEl.textContent = n ? String(n) : "";
+      assetCountEl.classList.toggle("is-empty", !n);
+      assetCountEl.setAttribute("aria-hidden", n ? "false" : "true");
+    }
+    if (!assetBadgesEl) return;
+    assetBadgesEl.innerHTML = "";
+    if (!selectedAssetIds.length) {
+      assetBadgesEl.classList.add("is-empty");
+      return;
+    }
+    assetBadgesEl.classList.remove("is-empty");
+    selectedAssetIds.forEach((id) => {
+      const meta = selectedAssetMeta[id] || { name: id, kind: "image" };
+      const chip = document.createElement("span");
+      chip.className = "sc-composer-asset-badge";
+      chip.title = meta.name;
+      chip.textContent = meta.name;
+      assetBadgesEl.appendChild(chip);
+    });
   }
 
   async function runPromptApply(rightWrap) {

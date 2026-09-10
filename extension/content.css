@@ -194,9 +194,19 @@
   font-weight: 650;
 }
 
+.sc-header-wordmark-amp {
+  font-weight: 650;
+  background: linear-gradient(90deg, #6060f0 0 50%, #111827 50% 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
 .sc-header-wordmark em {
   font-style: italic;
   font-weight: 600;
+  color: #111827;
 }
 
 .sc-title {
@@ -695,6 +705,32 @@
   background: #ffffff;
   overflow: visible;
   position: relative;
+}
+
+.sc-composer-asset-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 10px 0;
+}
+
+.sc-composer-asset-badges.is-empty {
+  display: none;
+}
+
+.sc-composer-asset-badge {
+  display: inline-flex;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: #eef0ff;
+  color: #3f3fd4;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
 }
 
 .sc-composer-input {
@@ -1252,6 +1288,34 @@
   background: #fff;
   cursor: pointer;
   overflow: hidden;
+}
+
+.sc-asset-hover-hint {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  background: rgba(15, 23, 42, 0.72);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 650;
+  line-height: 1.2;
+  text-align: center;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+
+.sc-asset-thumb:hover .sc-asset-hover-hint,
+.sc-asset-thumb:focus-visible .sc-asset-hover-hint {
+  opacity: 1;
+}
+
+.sc-asset-thumb.is-selected .sc-asset-hover-hint {
+  background: rgba(96, 96, 240, 0.82);
 }
 
 .sc-asset-thumb img {
