@@ -8,6 +8,7 @@
     gutter: 16,
     cornerRadius: 28,
     receiveFromWeb: false,
+    gridTheme: "dark",
   };
 
   function call(type, payload) {

@@ -291,16 +291,50 @@
     });
 
     let receiveFromWeb = Boolean(current.settings?.receiveFromWeb);
+    let gridTheme =
+      current.settings?.gridTheme === "light" ? "light" : "dark";
 
-    const receiveRow = document.createElement("label");
-    receiveRow.className = "sc-moodboard-receive";
-    const receiveCheck = document.createElement("input");
-    receiveCheck.type = "checkbox";
-    receiveCheck.checked = receiveFromWeb;
-    const receiveText = document.createElement("span");
-    receiveText.textContent = "Receive web images";
-    receiveRow.appendChild(receiveCheck);
-    receiveRow.appendChild(receiveText);
+    function makeToggle(labelText, checked, onChange) {
+      const row = document.createElement("label");
+      row.className = "sc-moodboard-toggle";
+      const text = document.createElement("span");
+      text.className = "sc-moodboard-toggle-label";
+      text.textContent = labelText;
+      const switchEl = document.createElement("span");
+      switchEl.className = "sc-moodboard-switch";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.checked = checked;
+      const track = document.createElement("span");
+      track.className = "sc-moodboard-switch-track";
+      const thumb = document.createElement("span");
+      thumb.className = "sc-moodboard-switch-thumb";
+      track.appendChild(thumb);
+      switchEl.appendChild(input);
+      switchEl.appendChild(track);
+      row.appendChild(text);
+      row.appendChild(switchEl);
+      input.addEventListener("change", () => onChange(Boolean(input.checked)));
+      return { row, input };
+    }
+
+    const receiveToggle = makeToggle(
+      "Receive web images",
+      receiveFromWeb,
+      (on) => {
+        receiveFromWeb = on;
+        persistSettings();
+      }
+    );
+    const themeToggle = makeToggle(
+      "Dark grid",
+      gridTheme === "dark",
+      (on) => {
+        gridTheme = on ? "dark" : "light";
+        applyGridTheme();
+        persistSettings();
+      }
+    );
 
     const hint = document.createElement("p");
     hint.className = "sc-moodboard-hint";
@@ -310,7 +344,8 @@
     side.appendChild(exportBtn);
     side.appendChild(gutterSlider);
     side.appendChild(radiusSlider);
-    side.appendChild(receiveRow);
+    side.appendChild(receiveToggle.row);
+    side.appendChild(themeToggle.row);
     side.appendChild(hint);
     if (!embedded) {
       side.appendChild(closeBtn);
@@ -336,6 +371,12 @@
       }
     }
 
+    function applyGridTheme() {
+      stage.classList.toggle("is-grid-light", gridTheme === "light");
+      canvas.classList.toggle("is-grid-light", gridTheme === "light");
+      themeToggle.input.checked = gridTheme === "dark";
+    }
+
     let persistTimer = null;
     function persistSettings() {
       clearTimeout(persistTimer);
@@ -348,6 +389,7 @@
             cornerRadius,
             patternIndex,
             receiveFromWeb,
+            gridTheme,
           });
           onBoardUpdated?.(current);
           syncReceiverMenus();
@@ -357,10 +399,7 @@
       }, 250);
     }
 
-    receiveCheck.addEventListener("change", () => {
-      receiveFromWeb = Boolean(receiveCheck.checked);
-      persistSettings();
-    });
+    applyGridTheme();
 
     function applyLayout() {
       const images = current.images || [];
@@ -639,7 +678,10 @@
         cornerRadius = Number(current.settings?.cornerRadius) || cornerRadius;
         patternIndex = Number(current.settings?.patternIndex) || patternIndex;
         receiveFromWeb = Boolean(current.settings?.receiveFromWeb);
-        receiveCheck.checked = receiveFromWeb;
+        gridTheme =
+          current.settings?.gridTheme === "light" ? "light" : "dark";
+        receiveToggle.input.checked = receiveFromWeb;
+        applyGridTheme();
         title.textContent = current.name || "Moodboard";
         applyLayout();
       },

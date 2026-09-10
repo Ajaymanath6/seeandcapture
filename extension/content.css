@@ -1665,16 +1665,9 @@
   transform: translateX(-50%);
   display: flex;
   gap: 6px;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.15s ease;
-  z-index: 3;
-}
-
-.sc-moodboard-canvas:hover .sc-moodboard-preview-actions,
-.sc-moodboard-canvas:focus-within .sc-moodboard-preview-actions {
   opacity: 1;
   pointer-events: auto;
+  z-index: 3;
 }
 
 .sc-moodboard-preview-actions.is-hidden {
@@ -1906,14 +1899,10 @@
 }
 
 .sc-board-chip-previews {
-  display: none;
+  display: flex;
   gap: 4px;
   margin-top: 6px;
   align-items: center;
-}
-
-.sc-board-chip:hover .sc-board-chip-previews {
-  display: flex;
 }
 
 .sc-board-chip-previews img {
@@ -2039,10 +2028,11 @@
   color: #64748b;
 }
 
-.sc-moodboard-receive {
+.sc-moodboard-toggle {
   display: flex;
-  align-items: flex-start;
-  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin: 2px 0 0;
   font-size: 12px;
   line-height: 1.35;
@@ -2051,10 +2041,75 @@
   user-select: none;
 }
 
-.sc-moodboard-receive input {
-  margin-top: 2px;
-  accent-color: #6060f0;
+.sc-moodboard-toggle-label {
+  min-width: 0;
+  flex: 1;
+}
+
+.sc-moodboard-switch {
+  position: relative;
+  width: 40px;
+  height: 22px;
   flex-shrink: 0;
+}
+
+.sc-moodboard-switch input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  margin: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.sc-moodboard-switch-track {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 999px;
+  background: #3f3f46;
+  transition: background 0.15s ease;
+  box-sizing: border-box;
+}
+
+.sc-moodboard-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #f4f4f5;
+  transition: transform 0.15s ease;
+  pointer-events: none;
+}
+
+.sc-moodboard-switch input:checked + .sc-moodboard-switch-track {
+  background: #6060f0;
+}
+
+.sc-moodboard-switch input:checked + .sc-moodboard-switch-track .sc-moodboard-switch-thumb {
+  transform: translateX(18px);
+}
+
+.sc-moodboard-switch input:focus-visible + .sc-moodboard-switch-track {
+  outline: 2px solid rgba(96, 96, 240, 0.55);
+  outline-offset: 2px;
+}
+
+.sc-moodboard-stage.is-grid-light {
+  background:
+    radial-gradient(circle at 1px 1px, rgba(15, 23, 42, 0.12) 1px, transparent 0)
+      0 0 / 18px 18px,
+    #e8eef5;
+}
+
+.sc-moodboard-canvas.is-grid-light {
+  background: #f7fafc;
+}
+
+.sc-moodboard-canvas.is-grid-light .sc-moodboard-empty {
+  color: #64748b;
 }
 
 .sc-moodboard-close {

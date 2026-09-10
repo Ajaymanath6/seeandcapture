@@ -8,6 +8,7 @@ dotenv.config({ path: path.join(__dirname, ".env") });
 const { getPreset, listPresetMeta } = require("./prompts");
 const { editWithNanoBanana } = require("./providers/gemini");
 const { editWithFal } = require("./providers/fal");
+const { editWithFluxApi } = require("./providers/fluxapi");
 const {
   editWithEden,
   removeBackgroundWithEden,
@@ -39,7 +40,15 @@ function hasEdenKey() {
   );
 }
 
+function hasFluxKey() {
+  return Boolean(
+    process.env.FLUXAPI_API_KEY &&
+      process.env.FLUXAPI_API_KEY !== "your_fluxapi_key_goes_here"
+  );
+}
+
 function preferredModel() {
+  if (hasFluxKey()) return "flux";
   if (hasEdenKey()) return "eden";
   if (hasFalKey()) return "fal";
   if (hasGoogleKey()) return "nano-banana";
@@ -50,7 +59,8 @@ function resolveModel(requested) {
   if (
     requested === "nano-banana" ||
     requested === "fal" ||
-    requested === "eden"
+    requested === "eden" ||
+    requested === "flux"
   ) {
     return requested;
   }
@@ -161,18 +171,8 @@ app.post("/api/edit", async (req, res) => {
       });
       usedModel = "local";
     } else if (preset.mode === "eden-background-removal") {
-      if (!hasEdenKey()) {
-        res.status(500).json({
-          error:
-            "EDEN_AI_API_KEY is missing. Add it to server/.env, then restart the server.",
-        });
-        return;
-      }
-      resultDataUrl = await removeBackgroundWithEden({
-        imageDataUrl,
-        apiKey: process.env.EDEN_AI_API_KEY,
-      });
-      usedModel = "eden-bg-removal";
+      resultDataUrl = await runRemoveBackground(imageDataUrl);
+      usedModel = hasFluxKey() ? "flux-bg-removal" : "eden-bg-removal";
     } else if (preset.mode === "eden-replace-subject") {
       if (!hasEdenKey()) {
         res.status(500).json({
@@ -198,56 +198,15 @@ app.post("/api/edit", async (req, res) => {
         apiKey: process.env.EDEN_AI_API_KEY,
       });
       usedModel = "eden-replace-subject";
-    } else if (
-      preset.mode === "eden-custom-prompt" ||
-      usedModel === "eden"
-    ) {
-      if (!hasEdenKey()) {
-        res.status(500).json({
-          error:
-            "EDEN_AI_API_KEY is missing. Add it to server/.env (see .env.example), then restart the server.",
-        });
-        return;
-      }
-      resultDataUrl = await editWithEden({
-        imageDataUrl,
-        prompt: promptWithContext,
-        apiKey: process.env.EDEN_AI_API_KEY,
-      });
-      if (preset.mode === "eden-custom-prompt") {
-        usedModel = "eden-custom-prompt";
-      }
-    } else if (usedModel === "fal") {
-      if (!hasFalKey()) {
-        res.status(500).json({
-          error:
-            "FAL_KEY is missing. Add it to server/.env (see .env.example), then restart the server.",
-        });
-        return;
-      }
-      resultDataUrl = await editWithFal({
-        imageDataUrl,
-        prompt: promptWithContext,
-        apiKey: process.env.FAL_KEY,
-      });
-    } else if (usedModel === "nano-banana") {
-      if (!hasGoogleKey()) {
-        res.status(500).json({
-          error:
-            "GOOGLE_API_KEY is missing. Set it in server/.env (see .env.example).",
-        });
-        return;
-      }
-      resultDataUrl = await editWithNanoBanana({
-        imageDataUrl,
-        prompt: promptWithContext,
-        apiKey: process.env.GOOGLE_API_KEY,
-      });
     } else {
-      res.status(400).json({
-        error: `Unsupported model "${usedModel}".`,
+      const ai = await runPromptEdit({
+        imageDataUrl,
+        prompt: promptWithContext,
+        preferred: usedModel,
+        isCustom: preset.mode === "eden-custom-prompt",
       });
-      return;
+      resultDataUrl = ai.imageDataUrl;
+      usedModel = ai.model;
     }
 
     res.json({
@@ -263,6 +222,102 @@ app.post("/api/edit", async (req, res) => {
     });
   }
 });
+
+async function runRemoveBackground(imageDataUrl) {
+  const errors = [];
+  if (hasFluxKey()) {
+    try {
+      return await editWithFluxApi({
+        imageDataUrl,
+        prompt:
+          "Remove the background from this image. Keep the main subject sharp and unchanged on a transparent or clean background.",
+        apiKey: process.env.FLUXAPI_API_KEY,
+      });
+    } catch (err) {
+      console.warn("[edit] Flux remove-bg failed, trying Eden:", err?.message);
+      errors.push(err?.message || String(err));
+    }
+  }
+  if (hasEdenKey()) {
+    return removeBackgroundWithEden({
+      imageDataUrl,
+      apiKey: process.env.EDEN_AI_API_KEY,
+    });
+  }
+  throw new Error(
+    errors[0] ||
+      "No remove-background provider configured. Set FLUXAPI_API_KEY or EDEN_AI_API_KEY."
+  );
+}
+
+async function runPromptEdit({ imageDataUrl, prompt, preferred, isCustom }) {
+  const order = [];
+  const pushUnique = (id) => {
+    if (id && !order.includes(id)) order.push(id);
+  };
+  pushUnique(preferred);
+  pushUnique(hasFluxKey() ? "flux" : null);
+  pushUnique(hasEdenKey() ? "eden" : null);
+  pushUnique(hasFalKey() ? "fal" : null);
+  pushUnique(hasGoogleKey() ? "nano-banana" : null);
+
+  const errors = [];
+  for (const id of order) {
+    try {
+      if (id === "flux") {
+        if (!hasFluxKey()) continue;
+        const image = await editWithFluxApi({
+          imageDataUrl,
+          prompt,
+          apiKey: process.env.FLUXAPI_API_KEY,
+        });
+        return {
+          imageDataUrl: image,
+          model: isCustom ? "flux-custom-prompt" : "flux",
+        };
+      }
+      if (id === "eden") {
+        if (!hasEdenKey()) continue;
+        const image = await editWithEden({
+          imageDataUrl,
+          prompt,
+          apiKey: process.env.EDEN_AI_API_KEY,
+        });
+        return {
+          imageDataUrl: image,
+          model: isCustom ? "eden-custom-prompt" : "eden",
+        };
+      }
+      if (id === "fal") {
+        if (!hasFalKey()) continue;
+        const image = await editWithFal({
+          imageDataUrl,
+          prompt,
+          apiKey: process.env.FAL_KEY,
+        });
+        return { imageDataUrl: image, model: "fal" };
+      }
+      if (id === "nano-banana") {
+        if (!hasGoogleKey()) continue;
+        const image = await editWithNanoBanana({
+          imageDataUrl,
+          prompt,
+          apiKey: process.env.GOOGLE_API_KEY,
+        });
+        return { imageDataUrl: image, model: "nano-banana" };
+      }
+    } catch (err) {
+      console.warn(`[edit] provider ${id} failed:`, err?.message || err);
+      errors.push(`${id}: ${err?.message || String(err)}`);
+    }
+  }
+
+  throw new Error(
+    errors.length
+      ? `All image providers failed. ${errors.join(" | ")}`
+      : "No image provider API key is configured in server/.env"
+  );
+}
 
 app.listen(PORT, HOST, () => {
   console.log(`See & Capture server listening on http://${HOST}:${PORT}`);

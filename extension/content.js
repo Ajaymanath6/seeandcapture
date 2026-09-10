@@ -414,6 +414,7 @@
   function showModal(captureDataUrl) {
     modalOpen = true;
     resultDataUrl = null;
+    croppedDataUrl = captureDataUrl || null;
     selectedAssetIds = [];
     contextEnabled = false;
     clearShadowUi();
@@ -1737,7 +1738,7 @@
       prompt: customPrompt,
       assets: [],
       pageContext: {},
-      model: "eden",
+      model: "auto",
     };
 
     if (window.SeeCapturePayload?.preparePayload) {
@@ -1745,7 +1746,7 @@
         imageDataUrl: sourceImage,
         presetId,
         prompt: customPrompt,
-        model: "eden",
+        model: "auto",
         flags: {
           contextEnabled,
           pageContext,

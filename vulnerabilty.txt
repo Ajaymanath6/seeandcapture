@@ -2,7 +2,7 @@
 
 ## Findings
 
-1. **server/.env** — contains `EDEN_AI_API_KEY` (and possibly other provider keys).
+1. **server/.env** — contains provider API keys (`EDEN_AI_API_KEY`, `FAL_KEY`, `GOOGLE_API_KEY`, `FLUXAPI_API_KEY`, etc.).
    - Risk: secret leakage if committed or shared.
    - Mitigation: keep `.env` gitignored; use `.env.example` with placeholders only; rotate keys if exposed.
 
@@ -12,3 +12,4 @@
 
 - Extension code uses IndexedDB for moodboards/assets (no API secrets in extension storage).
 - Local edit API is bound to localhost:8787.
+- FluxAPI integration uses Bearer auth via `FLUXAPI_API_KEY`; prefer `flux-kontext-pro`.

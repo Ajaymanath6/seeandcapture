@@ -31,7 +31,7 @@
       prompt: prompt || "",
       assets: [],
       pageContext: {},
-      model: model || "eden",
+      model: model || "auto",
     };
 
     if (safeFlags.contextEnabled && safeFlags.pageContext) {

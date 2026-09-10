@@ -304,7 +304,7 @@ async function editImageViaServer(message) {
   const body = {
     imageDataUrl: message.imageDataUrl,
     presetId: message.presetId,
-    model: message.model || "eden",
+    model: message.model || "auto",
     prompt: message.prompt || "",
     pageContext: message.pageContext || {},
     assets: Array.isArray(message.assets)

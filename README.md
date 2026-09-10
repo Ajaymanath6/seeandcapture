@@ -6,7 +6,7 @@ Chrome extension + local server: drag-select a region, describe an edit in a pro
 
 - Google Chrome
 - Node.js 20+ **or** Docker
-- At least one API key (Eden recommended)
+- At least one API key (FluxAPI or Eden recommended)
 
 ## 1. Add your API key
 
@@ -17,12 +17,15 @@ cp server/.env.example server/.env
 Open `server/.env` and set at least one:
 
 ```
+FLUXAPI_API_KEY=paste_your_fluxapi_key_here
 EDEN_AI_API_KEY=paste_your_eden_key_here
 FAL_KEY=paste_your_fal_key_here
 GOOGLE_API_KEY=paste_your_google_key_here
 ```
 
-For subject-quality edits, prefer:
+When `FLUXAPI_API_KEY` is set, prompt edits prefer Flux Kontext Pro ([docs](https://docs.fluxapi.ai/)).
+
+For Eden subject-quality edits, you can still set:
 
 ```
 EDEN_AI_MODEL=openai/gpt-image-1.5
