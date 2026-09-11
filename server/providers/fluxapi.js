@@ -25,6 +25,7 @@ async function editWithFluxApi({
   apiKey,
   model,
   aspectRatio,
+  enableTranslation = true,
 }) {
   if (!apiKey) {
     throw new Error("FLUXAPI_API_KEY is not set");
@@ -47,7 +48,7 @@ async function editWithFluxApi({
     inputImage,
     model: selectedModel,
     outputFormat: "png",
-    enableTranslation: true,
+    enableTranslation: Boolean(enableTranslation),
     promptUpsampling: false,
     safetyTolerance: 2,
   };

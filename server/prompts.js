@@ -47,9 +47,12 @@ const PRESETS = {
     label: "Text Remix",
     mode: "text-swap",
     prompt:
-      "Edit the attached graphic only. Replace the listed on-image text strings. " +
+      "Edit the attached graphic only. Replace ONLY the listed on-image text strings. " +
       "Erase old lettering completely and paint new copy matching typography, color, " +
-      "perspective, glow/shadow, and placement. Do not change unrelated artwork or layout.",
+      "perspective, glow/shadow, and placement. " +
+      "HARD CONSTRAINT: Do not replace the whole image. Do not invent a new photograph, " +
+      "scene, background, or layout. Keep all illustrations, colors, and composition identical " +
+      "except for the swapped glyphs.",
   },
   "visual-localizer": {
     id: "visual-localizer",
@@ -58,23 +61,22 @@ const PRESETS = {
     prompt:
       "Edit the attached ad/graphic only. Replace on-image text with the provided translations. " +
       "Erase old lettering, render localized copy matching style and placement, and scale text " +
-      "to fit buttons/banners without overflow. Keep brand art and layout intact.",
+      "to fit buttons/banners without overflow. Keep brand art and layout intact. " +
+      "HARD CONSTRAINT: Do not replace the whole image. Do not invent a new photograph or scene.",
   },
   "custom-prompt": {
     id: "custom-prompt",
     label: "Edit with prompt",
     mode: "eden-custom-prompt",
     prompt:
-      "The attached image is an identity and style REFERENCE only. " +
-      "The user's target description below is authoritative: when it conflicts with the reference " +
-      "(pose, hand/arm count, hair color or texture, prop colors, clothing, or other explicit details), " +
-      "follow the target description. " +
-      "HARD CONSTRAINT: If the target description states an explicit count or quantity " +
+      `${PRESERVE} ` +
+      "Apply only the user's requested edit below. Keep subjects, composition, framing, " +
+      "and unrelated regions identical unless the request explicitly changes them. " +
+      "HARD CONSTRAINT: If the request states an explicit count or quantity " +
       "(digits like 2/3/4 or words like both/two/three/four, or phrases like multiple arms/hands), " +
-      "you MUST render that exact count—even when the reference image shows a different count. " +
+      "you MUST render that exact count—even when the source image shows a different count. " +
       "Do not collapse multiple requested limbs/objects into one. " +
-      "Keep unrelated regions stable when possible. " +
-      "Do not invent a wholly new scene unless the target description requires it. Return one edited image.",
+      "Do not invent a wholly new scene unless the request requires it. Return one edited image.",
   },
 };
 

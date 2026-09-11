@@ -32,6 +32,33 @@
     return wrap;
   }
 
+  function formatProviderError(message, fallback) {
+    const raw = String(message || "").trim();
+    if (!raw) return fallback || "Request failed";
+    const lower = raw.toLowerCase();
+    const tips = [];
+    if (
+      lower.includes("insufficient") ||
+      lower.includes("credits are insufficient") ||
+      lower.includes("top up")
+    ) {
+      tips.push("Top up Flux credits at fluxapi.ai (they do not refill daily).");
+    }
+    if (lower.includes("locked") || lower.includes("top_up")) {
+      tips.push(
+        "Unlock/top up fal.ai billing (or regenerate the API key after topping up)."
+      );
+    }
+    if (
+      lower.includes("api key not valid") ||
+      lower.includes("invalid api key")
+    ) {
+      tips.push("Fix GOOGLE_API_KEY in server/.env (current key is invalid).");
+    }
+    if (!tips.length) return raw;
+    return `${tips.join(" ")}\n\nDetails: ${raw}`;
+  }
+
   /**
    * @param {{
    *   toolbarHost: HTMLElement,
@@ -134,22 +161,111 @@
       return overlay;
     }
 
-    function clientToImagePoint(clientX, clientY) {
-      const img = getImageEl();
+    function getContainedImageMetrics(img) {
       if (!img) return null;
       const rect = img.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return null;
-      const x = ((clientX - rect.left) / rect.width) * img.naturalWidth;
-      const y = ((clientY - rect.top) / rect.height) * img.naturalHeight;
+      const natW = img.naturalWidth || 0;
+      const natH = img.naturalHeight || 0;
+      if (rect.width <= 0 || rect.height <= 0 || natW <= 0 || natH <= 0) {
+        return null;
+      }
+      const scale = Math.min(rect.width / natW, rect.height / natH);
+      const contentW = natW * scale;
+      const contentH = natH * scale;
+      const contentLeft = rect.left + (rect.width - contentW) / 2;
+      const contentTop = rect.top + (rect.height - contentH) / 2;
       return {
-        x: Math.max(0, Math.min(img.naturalWidth, x)),
-        y: Math.max(0, Math.min(img.naturalHeight, y)),
-        displayX: clientX - rect.left,
-        displayY: clientY - rect.top,
-        displayW: rect.width,
-        displayH: rect.height,
-        natW: img.naturalWidth,
-        natH: img.naturalHeight,
+        rect,
+        natW,
+        natH,
+        scale,
+        contentW,
+        contentH,
+        contentLeft,
+        contentTop,
+      };
+    }
+
+    function clientToImagePoint(clientX, clientY) {
+      const img = getImageEl();
+      const m = getContainedImageMetrics(img);
+      if (!m) return null;
+      const x = (clientX - m.contentLeft) / m.scale;
+      const y = (clientY - m.contentTop) / m.scale;
+      return {
+        x: Math.max(0, Math.min(m.natW, x)),
+        y: Math.max(0, Math.min(m.natH, y)),
+        displayX: clientX - m.rect.left,
+        displayY: clientY - m.rect.top,
+        displayW: m.rect.width,
+        displayH: m.rect.height,
+        natW: m.natW,
+        natH: m.natH,
+        contentLeft: m.contentLeft,
+        contentTop: m.contentTop,
+        scale: m.scale,
+      };
+    }
+
+    function naturalToStagePoint(x, y, stageRect) {
+      const img = getImageEl();
+      const m = getContainedImageMetrics(img);
+      if (!m || !stageRect) return null;
+      return {
+        x: m.contentLeft - stageRect.left + x * m.scale,
+        y: m.contentTop - stageRect.top + y * m.scale,
+      };
+    }
+
+    function smoothLassoPath(points) {
+      if (!points || points.length < 3) return points || [];
+      if (points.length < 5) return points.slice();
+      const out = [];
+      const n = points.length;
+      for (let i = 0; i < n; i++) {
+        const p0 = points[(i - 1 + n) % n];
+        const p1 = points[i];
+        const p2 = points[(i + 1) % n];
+        const p3 = points[(i + 2) % n];
+        out.push(p1);
+        for (let t = 0.35; t < 1; t += 0.35) {
+          const t2 = t * t;
+          const t3 = t2 * t;
+          out.push({
+            x:
+              0.5 *
+              (2 * p1.x +
+                (-p0.x + p2.x) * t +
+                (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 +
+                (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
+            y:
+              0.5 *
+              (2 * p1.y +
+                (-p0.y + p2.y) * t +
+                (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 +
+                (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3),
+          });
+        }
+      }
+      return out;
+    }
+
+    function pathBoundingBox(points, pad = 2) {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      points.forEach((p) => {
+        minX = Math.min(minX, p.x);
+        minY = Math.min(minY, p.y);
+        maxX = Math.max(maxX, p.x);
+        maxY = Math.max(maxY, p.y);
+      });
+      return {
+        x: Math.max(0, Math.floor(minX - pad)),
+        y: Math.max(0, Math.floor(minY - pad)),
+        w: Math.max(1, Math.ceil(maxX - minX + pad * 2)),
+        h: Math.max(1, Math.ceil(maxY - minY + pad * 2)),
       };
     }
 
@@ -164,13 +280,14 @@
 
     async function applyCropAndSave() {
       if (!cropRect) return;
-      const { x, y, w, h, natW, natH } = cropRect;
+      const { x, y, w, h } = cropRect;
       if (w < 2 || h < 2) return;
       const src = await loadImage(getImageDataUrl());
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.round(w));
       canvas.height = Math.max(1, Math.round(h));
       const ctx = canvas.getContext("2d");
+      ctx.imageSmoothingEnabled = true;
       ctx.drawImage(
         src,
         Math.round(x),
@@ -221,17 +338,21 @@
 
     async function applyLasso(kind) {
       if (!closedLasso || closedLasso.length < 3) return;
+      const path = smoothLassoPath(closedLasso);
       const src = await loadImage(getImageDataUrl());
+      const fullW = src.naturalWidth || src.width;
+      const fullH = src.naturalHeight || src.height;
       const canvas = document.createElement("canvas");
-      canvas.width = src.naturalWidth || src.width;
-      canvas.height = src.naturalHeight || src.height;
+      canvas.width = fullW;
+      canvas.height = fullH;
       const ctx = canvas.getContext("2d");
+      ctx.imageSmoothingEnabled = true;
 
       if (kind === "isolate") {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         ctx.save();
         ctx.beginPath();
-        closedLasso.forEach((p, i) => {
+        path.forEach((p, i) => {
           if (i === 0) ctx.moveTo(p.x, p.y);
           else ctx.lineTo(p.x, p.y);
         });
@@ -239,22 +360,42 @@
         ctx.clip();
         ctx.drawImage(src, 0, 0);
         ctx.restore();
+
+        const box = pathBoundingBox(path, 2);
+        box.w = Math.min(box.w, fullW - box.x);
+        box.h = Math.min(box.h, fullH - box.y);
+        const tight = document.createElement("canvas");
+        tight.width = Math.max(1, box.w);
+        tight.height = Math.max(1, box.h);
+        const tctx = tight.getContext("2d");
+        tctx.imageSmoothingEnabled = true;
+        tctx.drawImage(
+          canvas,
+          box.x,
+          box.y,
+          box.w,
+          box.h,
+          0,
+          0,
+          box.w,
+          box.h
+        );
+        setImageDataUrl(tight.toDataURL("image/png"));
       } else {
         ctx.drawImage(src, 0, 0);
         ctx.save();
         ctx.globalCompositeOperation = "destination-out";
         ctx.beginPath();
-        closedLasso.forEach((p, i) => {
+        path.forEach((p, i) => {
           if (i === 0) ctx.moveTo(p.x, p.y);
           else ctx.lineTo(p.x, p.y);
         });
         ctx.closePath();
         ctx.fill();
         ctx.restore();
+        setImageDataUrl(canvas.toDataURL("image/png"));
       }
 
-      const next = canvas.toDataURL("image/png");
-      setImageDataUrl(next);
       exitMode();
       showEditSavedToast();
     }
@@ -301,17 +442,18 @@
         box.className = "sc-crop-box";
         overlay.appendChild(box);
       }
-      const img = getImageEl();
-      const rect = img.getBoundingClientRect();
       const stageRect = stageEl.getBoundingClientRect();
-      const scaleX = rect.width / cropRect.natW;
-      const scaleY = rect.height / cropRect.natH;
-      const left = rect.left - stageRect.left + cropRect.x * scaleX;
-      const top = rect.top - stageRect.top + cropRect.y * scaleY;
-      box.style.left = `${left}px`;
-      box.style.top = `${top}px`;
-      box.style.width = `${cropRect.w * scaleX}px`;
-      box.style.height = `${cropRect.h * scaleY}px`;
+      const tl = naturalToStagePoint(cropRect.x, cropRect.y, stageRect);
+      const br = naturalToStagePoint(
+        cropRect.x + cropRect.w,
+        cropRect.y + cropRect.h,
+        stageRect
+      );
+      if (!tl || !br) return;
+      box.style.left = `${tl.x}px`;
+      box.style.top = `${tl.y}px`;
+      box.style.width = `${Math.max(0, br.x - tl.x)}px`;
+      box.style.height = `${Math.max(0, br.y - tl.y)}px`;
     }
 
     function renderLasso() {
@@ -322,8 +464,6 @@
         svg.classList.add("sc-lasso-svg");
         overlay.appendChild(svg);
       }
-      const img = getImageEl();
-      const rect = img.getBoundingClientRect();
       const stageRect = stageEl.getBoundingClientRect();
       svg.setAttribute("width", String(stageRect.width));
       svg.setAttribute("height", String(stageRect.height));
@@ -335,16 +475,13 @@
         svg.innerHTML = "";
         return;
       }
-      const scaleX = rect.width / (img.naturalWidth || 1);
-      const scaleY = rect.height / (img.naturalHeight || 1);
-      const ox = rect.left - stageRect.left;
-      const oy = rect.top - stageRect.top;
       const d = pts
         .map((p, i) => {
-          const x = ox + p.x * scaleX;
-          const y = oy + p.y * scaleY;
-          return `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
+          const sp = naturalToStagePoint(p.x, p.y, stageRect);
+          if (!sp) return "";
+          return `${i === 0 ? "M" : "L"}${sp.x.toFixed(1)} ${sp.y.toFixed(1)}`;
         })
+        .filter(Boolean)
         .join(" ");
       const closed = closedLasso ? " Z" : "";
       svg.innerHTML = `<path d="${d}${closed}" class="sc-lasso-path" />`;
@@ -468,7 +605,7 @@
         const last = lassoPoints[lassoPoints.length - 1];
         const dx = p.x - last.x;
         const dy = p.y - last.y;
-        if (dx * dx + dy * dy < 9) return;
+        if (dx * dx + dy * dy < 2.25) return;
         lassoPoints.push({ x: p.x, y: p.y });
         renderLasso();
       };
@@ -522,7 +659,7 @@
         });
         setImageDataUrl(data.imageDataUrl);
       } catch (err) {
-        alert(err?.message || "Remove background failed");
+        alert(formatProviderError(err?.message, "Remove background failed"));
       } finally {
         setBusy(false);
       }
@@ -545,7 +682,7 @@
         setImageDataUrl(data.imageDataUrl);
         exitMode();
       } catch (err) {
-        alert(err?.message || "Edit with prompt failed");
+        alert(formatProviderError(err?.message, "Edit with prompt failed"));
       } finally {
         setBusy(false);
       }

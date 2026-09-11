@@ -422,7 +422,10 @@ app.post("/api/edit", async (req, res) => {
     let resultDataUrl;
     let usedModel = resolveModel(model);
     let basePrompt = preset.prompt;
-    if (preset.mode === "eden-custom-prompt") {
+    let editImageDataUrl = imageDataUrl;
+    const isTextSwap = preset.mode === "text-swap";
+    const isCustomPrompt = preset.mode === "eden-custom-prompt";
+    if (isCustomPrompt) {
       if (!userPrompt) {
         res.status(400).json({
           error: "custom-prompt requires a prompt string",
@@ -431,9 +434,18 @@ app.post("/api/edit", async (req, res) => {
       }
       basePrompt =
         `${preset.prompt}\n\n` +
-        `Target description (follow exactly; overrides the reference image when they disagree):\n` +
+        `Requested edit (apply only this change; keep everything else identical):\n` +
         `${userPrompt}`;
-    } else if (preset.mode === "text-swap") {
+      try {
+        editImageDataUrl = downscaleImageDataUrl(imageDataUrl);
+      } catch (err) {
+        console.warn(
+          "[edit] custom-prompt downscale failed:",
+          err?.message || err
+        );
+        editImageDataUrl = imageDataUrl;
+      }
+    } else if (isTextSwap) {
       const replacements = Array.isArray(req.body?.replacements)
         ? req.body.replacements
         : [];
@@ -451,6 +463,12 @@ app.post("/api/edit", async (req, res) => {
         ? buildTextSwapUserPrompt(replacements, languageLabel || null)
         : userPrompt;
       basePrompt = `${preset.prompt}\n\n${swapBody}`;
+      try {
+        editImageDataUrl = downscaleImageDataUrl(imageDataUrl);
+      } catch (err) {
+        console.warn("[edit] text-swap downscale failed:", err?.message || err);
+        editImageDataUrl = imageDataUrl;
+      }
     }
     const promptWithContext = withContextPrompt(basePrompt, pageContext);
 
@@ -522,11 +540,14 @@ app.post("/api/edit", async (req, res) => {
           : "eden-replace-subject";
     } else {
       const ai = await runPromptEdit({
-        imageDataUrl,
+        imageDataUrl: editImageDataUrl,
         prompt: promptWithContext,
         preferred: usedModel,
-        isCustom: preset.mode === "eden-custom-prompt",
+        isCustom: isCustomPrompt,
         aspectRatio,
+        skipEden: isTextSwap || isCustomPrompt,
+        enableTranslation: isTextSwap || isCustomPrompt ? false : true,
+        falStrength: isTextSwap ? 0.35 : isCustomPrompt ? 0.45 : null,
       });
       resultDataUrl = ai.imageDataUrl;
       usedModel = ai.model;
@@ -579,16 +600,25 @@ async function runPromptEdit({
   preferred,
   isCustom,
   aspectRatio,
+  skipEden = false,
+  enableTranslation = true,
+  falStrength = null,
 }) {
   const order = [];
   const pushUnique = (id) => {
     if (id && !order.includes(id)) order.push(id);
   };
-  pushUnique(preferred);
+  // Text-swap must never use Eden v2 generation (it invents new photos).
+  const preferredOk =
+    preferred === "flux" ||
+    preferred === "fal" ||
+    preferred === "nano-banana" ||
+    (preferred === "eden" && !skipEden);
+  pushUnique(preferredOk ? preferred : null);
   pushUnique(hasFluxKey() ? "flux" : null);
-  pushUnique(hasEdenKey() ? "eden" : null);
   pushUnique(hasFalKey() ? "fal" : null);
   pushUnique(hasGoogleKey() ? "nano-banana" : null);
+  if (!skipEden) pushUnique(hasEdenKey() ? "eden" : null);
 
   const errors = [];
   for (const id of order) {
@@ -600,6 +630,7 @@ async function runPromptEdit({
           prompt,
           apiKey: process.env.FLUXAPI_API_KEY,
           aspectRatio,
+          enableTranslation,
         });
         return {
           imageDataUrl: image,
@@ -624,6 +655,7 @@ async function runPromptEdit({
           imageDataUrl,
           prompt,
           apiKey: process.env.FAL_KEY,
+          strength: falStrength,
         });
         return { imageDataUrl: image, model: "fal" };
       }

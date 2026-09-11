@@ -18,6 +18,7 @@
   let selectedAssetIds = [];
   let leftWrapRef = null;
   let rightWrapRef = null;
+  let leftLabelRef = null;
   let rightLabelRef = null;
   let selectedPane = "capture";
   let modalRef = null;
@@ -383,6 +384,7 @@
     selectedAssetMeta = {};
     leftWrapRef = null;
     rightWrapRef = null;
+    leftLabelRef = null;
     rightLabelRef = null;
     selectedPane = "capture";
     modalRef = null;
@@ -604,15 +606,20 @@
     return new Promise((resolve, reject) => {
       const img = new Image();
       img.onload = () => {
-        const dpr = window.devicePixelRatio || 1;
-        const sx = Math.round(cssRect.left * dpr);
-        const sy = Math.round(cssRect.top * dpr);
-        const sw = Math.round(cssRect.width * dpr);
-        const sh = Math.round(cssRect.height * dpr);
+        const scaleX = img.width / Math.max(1, window.innerWidth);
+        const scaleY = img.height / Math.max(1, window.innerHeight);
+        let sx = Math.round(cssRect.left * scaleX);
+        let sy = Math.round(cssRect.top * scaleY);
+        let sw = Math.round(cssRect.width * scaleX);
+        let sh = Math.round(cssRect.height * scaleY);
+        sx = Math.max(0, Math.min(img.width - 1, sx));
+        sy = Math.max(0, Math.min(img.height - 1, sy));
+        sw = Math.max(1, Math.min(img.width - sx, sw));
+        sh = Math.max(1, Math.min(img.height - sy, sh));
 
         const canvas = document.createElement("canvas");
-        canvas.width = Math.max(1, sw);
-        canvas.height = Math.max(1, sh);
+        canvas.width = sw;
+        canvas.height = sh;
         const ctx = canvas.getContext("2d");
         if (!ctx) {
           reject(new Error("Canvas unavailable"));
@@ -940,6 +947,7 @@
     const leftLabel = document.createElement("p");
     leftLabel.className = "sc-pane-label";
     leftLabel.textContent = "Capture";
+    leftLabelRef = leftLabel;
     const leftWrap = document.createElement("div");
     leftWrap.className = "sc-image-wrap is-capture is-selected";
     leftWrap.tabIndex = 0;
@@ -1140,43 +1148,190 @@
     el.appendChild(img);
   }
 
-  function refreshTextRemixUi() {
-    setPreviewImage(
-      textRemixUi.preview,
-      textRemixMemory.captureDataUrl,
-      "Capture a graphic to remix"
-    );
-    const list = textRemixUi.list;
-    if (!list) return;
-    list.innerHTML = "";
-    (textRemixMemory.texts || []).forEach((row, index) => {
-      const item = document.createElement("div");
-      item.className = "sc-tw-row";
-      const original = document.createElement("div");
-      original.className = "sc-tw-original";
-      original.textContent = row.text;
-      const input = document.createElement("input");
-      input.type = "text";
-      input.className = "sc-tw-input";
-      input.value = row.newText != null ? row.newText : row.text;
-      input.placeholder = "New copy";
-      input.addEventListener("input", () => {
-        textRemixMemory.texts[index] = {
-          ...textRemixMemory.texts[index],
-          newText: input.value,
-        };
-      });
-      item.appendChild(original);
-      item.appendChild(input);
-      list.appendChild(item);
-    });
-    if (textRemixUi.result) {
-      setPreviewImage(
-        textRemixUi.result,
-        textRemixMemory.resultDataUrl,
-        "Swapped result appears here"
+  function formatProviderError(message, fallback) {
+    const raw = String(message || "").trim();
+    if (!raw) return fallback || "Request failed";
+    const lower = raw.toLowerCase();
+    const tips = [];
+    if (
+      lower.includes("insufficient") ||
+      lower.includes("credits are insufficient") ||
+      lower.includes("top up")
+    ) {
+      tips.push("Top up Flux credits at fluxapi.ai (they do not refill daily).");
+    }
+    if (lower.includes("locked") || lower.includes("top_up")) {
+      tips.push(
+        "Unlock/top up fal.ai billing (or regenerate the API key after topping up)."
       );
     }
+    if (
+      lower.includes("api key not valid") ||
+      lower.includes("invalid api key") ||
+      lower.includes("api key not valid")
+    ) {
+      tips.push("Fix GOOGLE_API_KEY in server/.env (current key is invalid).");
+    }
+    if (!tips.length) return raw;
+    return `${tips.join(" ")}\n\nDetails: ${raw}`;
+  }
+
+  function setButtonBusy(btn, busy, idleLabel, busyLabel) {
+    if (!btn) return;
+    btn.disabled = !!busy;
+    btn.classList.toggle("is-busy", !!busy);
+    btn.innerHTML = "";
+    if (busy) {
+      const spinner = document.createElement("span");
+      spinner.className = "sc-spinner sc-spinner-inline";
+      btn.appendChild(spinner);
+      const label = document.createElement("span");
+      label.textContent = busyLabel || "Working…";
+      btn.appendChild(label);
+    } else {
+      btn.textContent = idleLabel;
+    }
+  }
+
+  function updateTextRemixPrimaryBtn() {
+    const btn = textRemixUi.primaryBtn;
+    if (!btn) return;
+    if (btn.classList.contains("is-busy")) return;
+    const hasTexts = (textRemixMemory.texts || []).length > 0;
+    const hasCapture = Boolean(textRemixMemory.captureDataUrl);
+    btn.textContent = hasTexts ? "Swap Text" : "Detect text";
+    btn.disabled = inFlight || (!hasTexts && !hasCapture);
+    btn.title = hasTexts
+      ? "Swap detected text on the graphic"
+      : "Detect text in the capture";
+    btn.dataset.mode = hasTexts ? "swap" : "detect";
+  }
+
+  function attachTextRemixCaptureActions(wrap) {
+    if (!wrap) return;
+    wrap.querySelector(".sc-result-actions")?.remove();
+    const actions = document.createElement("div");
+    actions.className = "sc-result-actions sc-tw-capture-actions";
+
+    const captureBtn = document.createElement("button");
+    captureBtn.type = "button";
+    captureBtn.className = "sc-preview-btn";
+    captureBtn.textContent = "Capture graphic";
+    captureBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      startTextWorkflowCapture("text-remix");
+    });
+
+    const previewBtn = document.createElement("button");
+    previewBtn.type = "button";
+    previewBtn.className = "sc-preview-btn";
+    previewBtn.textContent = "Preview";
+    previewBtn.disabled = !textRemixMemory.captureDataUrl;
+    previewBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const url = textRemixMemory.captureDataUrl;
+      if (url) openImagePreview(url, { mode: "preview", target: "none" });
+    });
+
+    actions.appendChild(captureBtn);
+    actions.appendChild(previewBtn);
+    wrap.appendChild(actions);
+    textRemixUi.captureBtn = captureBtn;
+    textRemixUi.previewBtn = previewBtn;
+  }
+
+  function fillRemixPane(wrap, dataUrl, emptyText, kind) {
+    if (!wrap) return;
+    wrap.innerHTML = "";
+    if (!dataUrl) {
+      const empty = document.createElement("div");
+      empty.className = "sc-placeholder";
+      empty.textContent = emptyText;
+      wrap.appendChild(empty);
+    } else {
+      const img = document.createElement("img");
+      img.alt = emptyText;
+      img.src = dataUrl;
+      wrap.appendChild(img);
+    }
+    if (kind === "capture") {
+      attachTextRemixCaptureActions(wrap);
+    } else if (kind === "result" && dataUrl) {
+      attachTextRemixResultActions(wrap, dataUrl);
+    }
+  }
+
+  function attachTextRemixResultActions(wrap, dataUrl) {
+    if (!wrap) return;
+    wrap.querySelector(".sc-result-actions")?.remove();
+    const actions = document.createElement("div");
+    actions.className = "sc-result-actions";
+
+    const previewBtn = document.createElement("button");
+    previewBtn.type = "button";
+    previewBtn.className = "sc-preview-btn";
+    previewBtn.textContent = "Preview";
+    previewBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const url = textRemixMemory.resultDataUrl || dataUrl || wrap.querySelector("img")?.src;
+      if (url) openImagePreview(url, { mode: "preview", target: "none" });
+    });
+
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.className = "sc-preview-btn sc-edit-btn";
+    editBtn.textContent = "Edit";
+    editBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const url = textRemixMemory.resultDataUrl || dataUrl || wrap.querySelector("img")?.src;
+      if (!url) return;
+      openImagePreview(url, { mode: "edit", target: "text-remix-result" });
+    });
+
+    actions.appendChild(previewBtn);
+    actions.appendChild(editBtn);
+    wrap.appendChild(actions);
+  }
+
+  function refreshTextRemixUi() {
+    fillRemixPane(
+      textRemixUi.captureWrap,
+      textRemixMemory.captureDataUrl,
+      "Capture a graphic to remix",
+      "capture"
+    );
+    fillRemixPane(
+      textRemixUi.resultWrap,
+      textRemixMemory.resultDataUrl,
+      "Swapped result appears here",
+      "result"
+    );
+    const list = textRemixUi.list;
+    if (list) {
+      list.innerHTML = "";
+      (textRemixMemory.texts || []).forEach((row, index) => {
+        const item = document.createElement("div");
+        item.className = "sc-tw-row";
+        const original = document.createElement("div");
+        original.className = "sc-tw-original";
+        original.textContent = row.text;
+        const input = document.createElement("input");
+        input.type = "text";
+        input.className = "sc-tw-input";
+        input.value = row.newText != null ? row.newText : row.text;
+        input.placeholder = "New copy";
+        input.addEventListener("input", () => {
+          textRemixMemory.texts[index] = {
+            ...textRemixMemory.texts[index],
+            newText: input.value,
+          };
+        });
+        item.appendChild(original);
+        item.appendChild(input);
+        list.appendChild(item);
+      });
+    }
+    updateTextRemixPrimaryBtn();
   }
 
   function refreshVisualLocalizerUi() {
@@ -1270,48 +1425,52 @@
     const wrap = document.createElement("div");
     wrap.className = "sc-workspace sc-workspace-text-remix is-hidden";
 
-    const top = document.createElement("div");
-    top.className = "sc-tw-top";
-    const preview = document.createElement("div");
-    preview.className = "sc-tw-preview";
-    textRemixUi.preview = preview;
-    const actions = document.createElement("div");
-    actions.className = "sc-tw-actions";
-    const captureBtn = document.createElement("button");
-    captureBtn.type = "button";
-    captureBtn.className = "sc-mashup-capture-btn";
-    captureBtn.textContent = "Capture graphic";
-    captureBtn.addEventListener("click", () =>
-      startTextWorkflowCapture("text-remix")
-    );
-    const detectBtn = document.createElement("button");
-    detectBtn.type = "button";
-    detectBtn.className = "sc-mashup-capture-btn";
-    detectBtn.textContent = "Detect text";
-    detectBtn.addEventListener("click", () => runTextRemixDetect());
-    actions.appendChild(captureBtn);
-    actions.appendChild(detectBtn);
-    top.appendChild(preview);
-    top.appendChild(actions);
+    const body = document.createElement("div");
+    body.className = "sc-body sc-tw-body";
+
+    const left = document.createElement("div");
+    left.className = "sc-pane";
+    const leftLabel = document.createElement("p");
+    leftLabel.className = "sc-pane-label";
+    leftLabel.textContent = "Capture";
+    const captureWrap = document.createElement("div");
+    captureWrap.className = "sc-image-wrap is-capture";
+    textRemixUi.captureWrap = captureWrap;
+    left.appendChild(leftLabel);
+    left.appendChild(captureWrap);
+
+    const right = document.createElement("div");
+    right.className = "sc-pane";
+    const rightLabel = document.createElement("p");
+    rightLabel.className = "sc-pane-label";
+    rightLabel.textContent = "Result";
+    const resultWrap = document.createElement("div");
+    resultWrap.className = "sc-image-wrap is-result";
+    textRemixUi.resultWrap = resultWrap;
+    right.appendChild(rightLabel);
+    right.appendChild(resultWrap);
+
+    body.appendChild(left);
+    body.appendChild(right);
 
     const list = document.createElement("div");
     list.className = "sc-tw-list";
     textRemixUi.list = list;
 
-    const swapBtn = document.createElement("button");
-    swapBtn.type = "button";
-    swapBtn.className = "sc-mashup-generate";
-    swapBtn.textContent = "Swap Text";
-    swapBtn.addEventListener("click", () => runTextRemixSwap());
+    const primaryBtn = document.createElement("button");
+    primaryBtn.type = "button";
+    primaryBtn.className = "sc-mashup-generate sc-tw-swap-btn sc-tw-primary-btn";
+    primaryBtn.textContent = "Detect text";
+    primaryBtn.dataset.mode = "detect";
+    primaryBtn.addEventListener("click", () => {
+      if (primaryBtn.dataset.mode === "swap") runTextRemixSwap();
+      else runTextRemixDetect();
+    });
+    textRemixUi.primaryBtn = primaryBtn;
 
-    const result = document.createElement("div");
-    result.className = "sc-tw-result";
-    textRemixUi.result = result;
-
-    wrap.appendChild(top);
+    wrap.appendChild(body);
     wrap.appendChild(list);
-    wrap.appendChild(swapBtn);
-    wrap.appendChild(result);
+    wrap.appendChild(primaryBtn);
     refreshTextRemixUi();
     return wrap;
   }
@@ -1436,6 +1595,11 @@
     }
     if (inFlight) return;
     inFlight = true;
+    const captureWrap = textRemixUi.captureWrap;
+    if (captureWrap) captureWrap.classList.add("is-busy");
+    if (textRemixUi.captureBtn) textRemixUi.captureBtn.disabled = true;
+    if (textRemixUi.previewBtn) textRemixUi.previewBtn.disabled = true;
+    setButtonBusy(textRemixUi.primaryBtn, true, "Detect text", "Detecting…");
     try {
       const data = await requestDetectText(textRemixMemory.captureDataUrl);
       const texts = (data.texts || []).map((t) => ({
@@ -1444,16 +1608,34 @@
       }));
       await saveTextRemixMemory({ texts });
       refreshTextRemixUi();
+      if (!texts.length) {
+        alert("No text found in this graphic.");
+      }
     } catch (err) {
       alert(err?.message || "Detect text failed");
     } finally {
       inFlight = false;
+      if (captureWrap) captureWrap.classList.remove("is-busy");
+      if (textRemixUi.captureBtn) textRemixUi.captureBtn.disabled = false;
+      if (textRemixUi.previewBtn) {
+        textRemixUi.previewBtn.disabled = !textRemixMemory.captureDataUrl;
+      }
+      setButtonBusy(
+        textRemixUi.primaryBtn,
+        false,
+        (textRemixMemory.texts || []).length ? "Swap Text" : "Detect text"
+      );
+      updateTextRemixPrimaryBtn();
     }
   }
 
   async function runTextRemixSwap() {
     if (!textRemixMemory.captureDataUrl) {
       alert("Capture a graphic first.");
+      return;
+    }
+    if (!(textRemixMemory.texts || []).length) {
+      alert("Detect text first.");
       return;
     }
     const replacements = (textRemixMemory.texts || [])
@@ -1468,6 +1650,20 @@
     }
     if (inFlight) return;
     inFlight = true;
+    setButtonBusy(textRemixUi.primaryBtn, true, "Swap Text", "Swapping…");
+    const resultWrap = textRemixUi.resultWrap;
+    if (resultWrap) {
+      resultWrap.innerHTML = "";
+      const status = document.createElement("div");
+      status.className = "sc-status";
+      const spinner = document.createElement("div");
+      spinner.className = "sc-spinner";
+      const label = document.createElement("span");
+      label.textContent = "Swapping text…";
+      status.appendChild(spinner);
+      status.appendChild(label);
+      resultWrap.appendChild(status);
+    }
     try {
       const data = await requestTextSwap({
         presetId: "text-remix",
@@ -1476,10 +1672,27 @@
       });
       await saveTextRemixMemory({ resultDataUrl: data.imageDataUrl });
       refreshTextRemixUi();
+      if (data.model) {
+        console.info("[text-remix] swap model:", data.model);
+      }
+      if (data.model === "eden" || data.model === "eden-custom-prompt") {
+        alert(
+          "Swap used Eden (weak for text edits) and may rewrite the graphic. Prefer Flux — check server logs if Flux failed."
+        );
+      }
     } catch (err) {
-      alert(err?.message || "Swap text failed");
+      alert(formatProviderError(err?.message, "Swap text failed"));
+      await saveTextRemixMemory({ resultDataUrl: null });
+      fillRemixPane(
+        textRemixUi.resultWrap,
+        null,
+        "Swapped result appears here",
+        "result"
+      );
     } finally {
       inFlight = false;
+      setButtonBusy(textRemixUi.primaryBtn, false, "Swap Text");
+      updateTextRemixPrimaryBtn();
     }
   }
 
@@ -1715,9 +1928,10 @@
         mashupResultWrapRef.innerHTML = "";
         const statusErr = document.createElement("div");
         statusErr.className = "sc-status is-error";
-        statusErr.textContent =
-          err?.message ||
-          "Mashup failed. Is the local server running on port 8787?";
+        statusErr.textContent = formatProviderError(
+          err?.message,
+          "Mashup failed. Is the local server running on port 8787?"
+        );
         mashupResultWrapRef.appendChild(statusErr);
       }
     } finally {
@@ -1745,8 +1959,8 @@
       btn.dataset.presetId = def.id;
       btn.textContent = def.label;
       btn.addEventListener("click", () => {
-        if (def.id === "get-prompt") runGetPrompt(rightWrap);
-        else if (def.id === "extract-palette") runExtractPalette(rightWrap);
+        if (def.id === "get-prompt") runGetPrompt();
+        else if (def.id === "extract-palette") runExtractPalette();
         else runQuickPreset(def.id, rightWrap);
       });
       quick.appendChild(btn);
@@ -2169,8 +2383,10 @@
     } catch (err) {
       showError(
         rightWrap,
-        err?.message ||
+        formatProviderError(
+          err?.message,
           "Request failed. Is the local server running on port 8787?"
+        )
       );
     } finally {
       inFlight = false;
@@ -2181,8 +2397,15 @@
     }
   }
 
-  async function runGetPrompt(rightWrap) {
-    if (inFlight || !croppedDataUrl) return;
+  async function runGetPrompt() {
+    const useResult =
+      selectedPane === "result" && Boolean(resultDataUrl);
+    const targetWrap = useResult ? rightWrapRef : leftWrapRef;
+    const sourceUrl = useResult
+      ? resultDataUrl
+      : croppedDataUrl;
+    const actionTarget = useResult ? "result" : "capture";
+    if (inFlight || !sourceUrl || !targetWrap) return;
     inFlight = true;
     if (applyBtnRef) applyBtnRef.disabled = true;
     const buttons = shadowRoot
@@ -2191,17 +2414,22 @@
     buttons.forEach((b) => {
       b.disabled = true;
     });
-    setRightPaneLabel("Prompt");
-    showWorking(rightWrap, "Writing prompt…");
+    showWorking(targetWrap, "Writing prompt…");
     try {
-      const result = await requestGetPrompt(croppedDataUrl);
-      showPromptResult(rightWrap, result.prompt, result.model);
+      const result = await requestGetPrompt(sourceUrl);
+      showPromptResult(targetWrap, result.prompt, result.model, {
+        imageUrl: sourceUrl,
+        actionTarget,
+      });
     } catch (err) {
       showError(
-        rightWrap,
+        targetWrap,
         err?.message ||
           "Could not get prompt. Is the local server running on port 8787?"
       );
+      if (!useResult && croppedDataUrl && leftWrapRef === targetWrap) {
+        restoreCapturePaneImage();
+      }
     } finally {
       inFlight = false;
       if (applyBtnRef) applyBtnRef.disabled = false;
@@ -2211,8 +2439,45 @@
     }
   }
 
-  async function runExtractPalette(rightWrap) {
-    if (inFlight || !croppedDataUrl) return;
+  function restoreCapturePaneImage() {
+    if (!leftWrapRef || !croppedDataUrl) return;
+    leftWrapRef.innerHTML = "";
+    leftWrapRef.classList.remove(
+      "is-prompt",
+      "is-palette",
+      "is-palette-scroll",
+      "is-meta-scroll"
+    );
+    leftWrapRef.classList.add("is-capture");
+    const img = document.createElement("img");
+    img.alt = "Captured region";
+    img.src = croppedDataUrl;
+    leftWrapRef.appendChild(img);
+    attachImageActions(leftWrapRef, "capture");
+    if (leftLabelRef) leftLabelRef.textContent = "Capture";
+  }
+
+  function clearCapturePromptStack() {
+    if (!leftWrapRef) return;
+    const hadPrompt = leftWrapRef.querySelector(".sc-prompt-below");
+    const hadPalette = leftWrapRef.querySelector(".sc-palette-below");
+    if (
+      !hadPrompt &&
+      !hadPalette &&
+      !leftWrapRef.classList.contains("is-meta-scroll")
+    ) {
+      return;
+    }
+    restoreCapturePaneImage();
+  }
+
+  async function runExtractPalette() {
+    const useResult =
+      selectedPane === "result" && Boolean(resultDataUrl);
+    const targetWrap = useResult ? rightWrapRef : leftWrapRef;
+    const sourceUrl = useResult ? resultDataUrl : croppedDataUrl;
+    const actionTarget = useResult ? "result" : "capture";
+    if (inFlight || !sourceUrl || !targetWrap) return;
     inFlight = true;
     if (applyBtnRef) applyBtnRef.disabled = true;
     const buttons = shadowRoot
@@ -2221,17 +2486,24 @@
     buttons.forEach((b) => {
       b.disabled = true;
     });
+    showWorking(targetWrap, "Extracting palette…");
     try {
-      const hexes = await extractTopColors(croppedDataUrl, 5);
+      const hexes = await extractTopColors(sourceUrl, 5);
       if (!hexes.length) {
-        throw new Error("Could not extract colors from this capture.");
+        throw new Error("Could not extract colors from this image.");
       }
-      showPaletteResult(rightWrap, hexes);
+      showPaletteResult(targetWrap, hexes, {
+        imageUrl: sourceUrl,
+        actionTarget,
+      });
     } catch (err) {
       showError(
-        rightWrap,
-        err?.message || "Could not extract palette from capture."
+        targetWrap,
+        err?.message || "Could not extract palette from image."
       );
+      if (!useResult && croppedDataUrl && leftWrapRef === targetWrap) {
+        restoreCapturePaneImage();
+      }
     } finally {
       inFlight = false;
       if (applyBtnRef) applyBtnRef.disabled = false;
@@ -2243,6 +2515,10 @@
 
   function setRightPaneLabel(text) {
     if (rightLabelRef) rightLabelRef.textContent = text;
+  }
+
+  function setLeftPaneLabel(text) {
+    if (leftLabelRef) leftLabelRef.textContent = text;
   }
 
   function updateAssetCountLabel() {
@@ -2289,8 +2565,17 @@
           selectedAspectRatio && selectedAspectRatio !== "original"
             ? selectedAspectRatio
             : null,
+        preferDirect: true,
       });
       showResult(rightWrap, data.imageDataUrl);
+      if (data.model) {
+        console.info("[custom-prompt] model:", data.model);
+      }
+      if (data.model === "eden" || data.model === "eden-custom-prompt") {
+        alert(
+          "Apply used Eden (weak for edits) and may rewrite the image. Prefer Flux — check credits/server logs if Flux failed."
+        );
+      }
       chrome.runtime.sendMessage({
         type: "SAVE_RESULT",
         presetId: "custom-prompt",
@@ -2300,8 +2585,10 @@
     } catch (err) {
       showError(
         rightWrap,
-        err?.message ||
+        formatProviderError(
+          err?.message,
           "Request failed. Is the local server running on port 8787?"
+        )
       );
     } finally {
       inFlight = false;
@@ -2349,7 +2636,23 @@
     if (headerBackRef) headerBackRef.classList.add("is-hidden");
   }
 
+  function hideAllWorkspaces() {
+    [
+      allWorkspaceRef,
+      mashupWorkspaceRef,
+      textRemixWorkspaceRef,
+      visualLocalizerWorkspaceRef,
+    ].forEach((el) => {
+      if (el) el.classList.add("is-hidden");
+    });
+  }
+
+  function showActiveWorkflowWorkspace() {
+    setWorkflowMode(workflowMode || "all");
+  }
+
   function hideCaptureChrome() {
+    hideAllWorkspaces();
     if (bodyRef) bodyRef.classList.add("is-hidden");
     if (composerRef) composerRef.classList.add("is-hidden");
     if (headerActionsRef) headerActionsRef.classList.add("is-hidden");
@@ -2359,6 +2662,7 @@
     if (bodyRef) bodyRef.classList.remove("is-hidden");
     if (composerRef) composerRef.classList.remove("is-hidden");
     if (headerActionsRef) headerActionsRef.classList.remove("is-hidden");
+    showActiveWorkflowWorkspace();
   }
 
   function clearModalSubviews() {
@@ -2597,6 +2901,26 @@
         saveDataUrl: (url) => saveImageToComputer(null, url),
         openPreview: (url) =>
           openImagePreview(url, { mode: "preview", target: "none" }),
+        extractColors: (dataUrl) => extractTopColors(dataUrl, 5),
+        requestVariation: async ({ imageDataUrl, hex }) => {
+          const color = String(hex || "").trim();
+          try {
+            const data = await requestEdit("custom-prompt", {
+              imageDataUrl,
+              prompt: `Recolor this exact image toward ${color}. Keep subjects, composition, and layout identical—only shift the color theme.`,
+              preferDirect: true,
+            });
+            showAppToast("Variation ready", color || "Color shift");
+            return data;
+          } catch (err) {
+            throw new Error(
+              formatProviderError(
+                err?.message,
+                "Could not generate variation. Is the local server running on port 8787?"
+              )
+            );
+          }
+        },
         onClose: () => {
           moodboardViewerApi = null;
           restoreCaptureView();
@@ -2736,9 +3060,15 @@
   }
 
   function showResult(resultWrap, dataUrl) {
+    clearCapturePromptStack();
     setRightPaneLabel("Generation");
     resultWrap.innerHTML = "";
-    resultWrap.classList.remove("is-prompt", "is-palette", "is-palette-scroll");
+    resultWrap.classList.remove(
+      "is-prompt",
+      "is-palette",
+      "is-palette-scroll",
+      "is-meta-scroll"
+    );
     resultWrap.classList.add("is-result");
     const img = document.createElement("img");
     img.className = "sc-gen-image";
@@ -2750,15 +3080,38 @@
     setSelectedPane("result");
   }
 
-  function showPromptResult(resultWrap, promptText, modelId) {
-    setRightPaneLabel("Prompt");
-    resultWrap.innerHTML = "";
-    resultWrap.classList.remove("is-palette", "is-palette-scroll");
-    resultWrap.classList.add("is-result", "is-prompt");
+  function ensurePaneImageStage(wrap, imageUrl, actionTarget) {
+    let stage = wrap.querySelector(".sc-gen-stage");
+    if (stage) {
+      const img = stage.querySelector("img");
+      if (img && imageUrl) img.src = imageUrl;
+      attachImageActions(stage, actionTarget);
+      return stage;
+    }
+    const previousImg = wrap.querySelector("img");
+    const src = previousImg?.src || imageUrl;
+    wrap.innerHTML = "";
+    stage = document.createElement("div");
+    stage.className = "sc-gen-stage";
+    const img = document.createElement("img");
+    img.className = "sc-gen-image";
+    img.alt = actionTarget === "capture" ? "Captured region" : "Generated image";
+    img.src = src;
+    stage.appendChild(img);
+    wrap.appendChild(stage);
+    attachImageActions(stage, actionTarget);
+    return stage;
+  }
+
+  function buildPromptBelow(promptText, modelId) {
     const pane = document.createElement("div");
-    pane.className = "sc-prompt-pane";
+    pane.className = "sc-prompt-below";
     const toolbar = document.createElement("div");
     toolbar.className = "sc-prompt-pane-toolbar";
+    const title = document.createElement("span");
+    title.className = "sc-prompt-below-title";
+    title.textContent = "Prompt";
+    toolbar.appendChild(title);
     if (modelId) {
       const modelHint = document.createElement("span");
       modelHint.className = "sc-prompt-model-hint";
@@ -2793,8 +3146,51 @@
     pane.appendChild(toolbar);
     pane.appendChild(area);
     pane.addEventListener("click", (e) => e.stopPropagation());
-    resultWrap.appendChild(pane);
-    setSelectedPane("result");
+    return pane;
+  }
+
+  function showPromptResult(wrap, promptText, modelId, opts) {
+    const actionTarget =
+      opts?.actionTarget === "capture" ? "capture" : "result";
+    const imageUrl =
+      opts?.imageUrl ||
+      (actionTarget === "capture"
+        ? croppedDataUrl
+        : resultDataUrl || croppedDataUrl);
+    if (!imageUrl || !wrap) {
+      if (wrap) {
+        showError(wrap, "Capture an image first, then get a prompt.");
+      }
+      return;
+    }
+
+    if (actionTarget === "capture") {
+      setLeftPaneLabel("Capture · Prompt");
+    } else {
+      setRightPaneLabel(
+        resultDataUrl ? "Generation · Prompt" : "Prompt"
+      );
+    }
+
+    wrap.classList.remove("is-prompt", "is-palette");
+    wrap.classList.add(
+      actionTarget === "capture" ? "is-capture" : "is-result",
+      "is-palette-scroll",
+      "is-meta-scroll"
+    );
+
+    const existingBelow = wrap.querySelector(".sc-prompt-below");
+    if (existingBelow) existingBelow.remove();
+    const existingPalette = wrap.querySelector(".sc-palette-below");
+    if (existingPalette) existingPalette.remove();
+
+    ensurePaneImageStage(wrap, imageUrl, actionTarget);
+    wrap.appendChild(buildPromptBelow(promptText, modelId));
+    setSelectedPane(actionTarget === "capture" ? "capture" : "result");
+    requestAnimationFrame(() => {
+      const below = wrap.querySelector(".sc-prompt-below");
+      if (below) below.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
   }
 
   function buildPaletteBelow(hexColors) {
@@ -2844,40 +3240,46 @@
     return pane;
   }
 
-  function showPaletteResult(resultWrap, hexColors) {
-    const imageUrl = resultDataUrl || croppedDataUrl;
-    if (!imageUrl) {
-      showError(resultWrap, "Capture an image first, then extract a palette.");
+  function showPaletteResult(wrap, hexColors, opts) {
+    const actionTarget =
+      opts?.actionTarget === "capture" ? "capture" : "result";
+    const imageUrl =
+      opts?.imageUrl ||
+      (actionTarget === "capture"
+        ? croppedDataUrl
+        : resultDataUrl || croppedDataUrl);
+    if (!imageUrl || !wrap) {
+      if (wrap) {
+        showError(wrap, "Capture an image first, then extract a palette.");
+      }
       return;
     }
 
-    setRightPaneLabel("Generation · Palette");
-    resultWrap.classList.remove("is-prompt", "is-palette");
-    resultWrap.classList.add("is-result", "is-palette-scroll");
-
-    const existingBelow = resultWrap.querySelector(".sc-palette-below");
-    if (existingBelow) existingBelow.remove();
-
-    let stage = resultWrap.querySelector(".sc-gen-stage");
-    if (!stage) {
-      const previousImg = resultWrap.querySelector("img");
-      const src = previousImg?.src || imageUrl;
-      resultWrap.innerHTML = "";
-      stage = document.createElement("div");
-      stage.className = "sc-gen-stage";
-      const img = document.createElement("img");
-      img.className = "sc-gen-image";
-      img.alt = resultDataUrl ? "Generated image" : "Captured region";
-      img.src = src;
-      stage.appendChild(img);
-      resultWrap.appendChild(stage);
-      attachImageActions(stage, "result");
+    if (actionTarget === "capture") {
+      setLeftPaneLabel("Capture · Palette");
+    } else {
+      setRightPaneLabel(
+        resultDataUrl ? "Generation · Palette" : "Palette"
+      );
     }
 
-    resultWrap.appendChild(buildPaletteBelow(hexColors));
-    setSelectedPane("result");
+    wrap.classList.remove("is-prompt", "is-palette");
+    wrap.classList.add(
+      actionTarget === "capture" ? "is-capture" : "is-result",
+      "is-palette-scroll",
+      "is-meta-scroll"
+    );
+
+    const existingBelow = wrap.querySelector(".sc-palette-below");
+    if (existingBelow) existingBelow.remove();
+    const existingPrompt = wrap.querySelector(".sc-prompt-below");
+    if (existingPrompt) existingPrompt.remove();
+
+    ensurePaneImageStage(wrap, imageUrl, actionTarget);
+    wrap.appendChild(buildPaletteBelow(hexColors));
+    setSelectedPane(actionTarget === "capture" ? "capture" : "result");
     requestAnimationFrame(() => {
-      const below = resultWrap.querySelector(".sc-palette-below");
+      const below = wrap.querySelector(".sc-palette-below");
       if (below) below.scrollIntoView({ block: "nearest", behavior: "smooth" });
     });
   }
@@ -2887,8 +3289,32 @@
     return `#${toHex(r)}${toHex(g)}${toHex(b)}`.toUpperCase();
   }
 
+  function rgbToHsv(r, g, b) {
+    const rr = r / 255;
+    const gg = g / 255;
+    const bb = b / 255;
+    const max = Math.max(rr, gg, bb);
+    const min = Math.min(rr, gg, bb);
+    const d = max - min;
+    let h = 0;
+    if (d !== 0) {
+      if (max === rr) h = ((gg - bb) / d) % 6;
+      else if (max === gg) h = (bb - rr) / d + 2;
+      else h = (rr - gg) / d + 4;
+      h /= 6;
+      if (h < 0) h += 1;
+    }
+    const s = max === 0 ? 0 : d / max;
+    return { h, s, v: max };
+  }
+
   function colorDistance(a, b) {
     return Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b);
+  }
+
+  function hueDistance(a, b) {
+    const d = Math.abs(a - b);
+    return Math.min(d, 1 - d);
   }
 
   function extractTopColors(dataUrl, count = 5) {
@@ -2896,7 +3322,7 @@
       const img = new Image();
       img.onload = () => {
         try {
-          const maxSide = 96;
+          const maxSide = 180;
           const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
           const w = Math.max(1, Math.round(img.width * scale));
           const h = Math.max(1, Math.round(img.height * scale));
@@ -2910,60 +3336,84 @@
           }
           ctx.drawImage(img, 0, 0, w, h);
           const { data } = ctx.getImageData(0, 0, w, h);
-          const bucketSize = 24;
           const buckets = new Map();
+
           for (let i = 0; i < data.length; i += 4) {
-            const a = data[i + 3];
-            if (a < 128) continue;
+            if (data[i + 3] < 128) continue;
             const r = data[i];
             const g = data[i + 1];
             const b = data[i + 2];
-            const br = Math.round(r / bucketSize) * bucketSize;
-            const bg = Math.round(g / bucketSize) * bucketSize;
-            const bb = Math.round(b / bucketSize) * bucketSize;
-            const key = `${br},${bg},${bb}`;
-            const prev = buckets.get(key);
-            if (prev) {
-              prev.count += 1;
-              prev.rSum += r;
-              prev.gSum += g;
-              prev.bSum += b;
-            } else {
-              buckets.set(key, {
-                count: 1,
-                rSum: r,
-                gSum: g,
-                bSum: b,
-              });
+            const { h: hue, s, v } = rgbToHsv(r, g, b);
+            const hb = Math.floor(hue * 36) % 36;
+            const sb = s < 0.12 ? 0 : s < 0.35 ? 1 : s < 0.65 ? 2 : 3;
+            const vb = v < 0.2 ? 0 : v < 0.45 ? 1 : v < 0.75 ? 2 : 3;
+            const key = `${hb}:${sb}:${vb}`;
+            let bucket = buckets.get(key);
+            if (!bucket) {
+              bucket = {
+                count: 0,
+                h: hue,
+                s,
+                v,
+                best: { r, g, b },
+                bestPop: -1,
+              };
+              buckets.set(key, bucket);
+            }
+            bucket.count += 1;
+            bucket.h = hue;
+            bucket.s = s;
+            bucket.v = v;
+            const pop = s * s * (0.35 + v);
+            if (pop > bucket.bestPop) {
+              bucket.bestPop = pop;
+              bucket.best = { r, g, b };
             }
           }
-          const ranked = [...buckets.values()]
-            .map((bucket) => ({
-              count: bucket.count,
-              r: Math.round(bucket.rSum / bucket.count),
-              g: Math.round(bucket.gSum / bucket.count),
-              b: Math.round(bucket.bSum / bucket.count),
-            }))
-            .sort((a, b) => b.count - a.count);
+
+          const ranked = [...buckets.values()].map((bucket) => {
+            const vibrancy = bucket.s ** 1.2 * (0.25 + bucket.v);
+            let score = bucket.count ** 0.85 * (0.08 + vibrancy * 4.5);
+            if (bucket.v < 0.12) score *= 0.35;
+            if (bucket.s < 0.08 && bucket.v > 0.2 && bucket.v < 0.95) {
+              score *= 0.45;
+            }
+            return {
+              r: bucket.best.r,
+              g: bucket.best.g,
+              b: bucket.best.b,
+              h: bucket.h,
+              s: bucket.s,
+              v: bucket.v,
+              score,
+            };
+          });
+          ranked.sort((a, b) => b.score - a.score);
 
           const picked = [];
           for (const color of ranked) {
             if (picked.length >= count) break;
-            const tooClose = picked.some(
-              (existing) => colorDistance(existing, color) < 48
-            );
-            if (tooClose) continue;
-            picked.push(color);
+            const tooClose = picked.some((existing) => {
+              if (colorDistance(existing, color) < 70) return true;
+              if (
+                color.s > 0.25 &&
+                existing.s > 0.25 &&
+                hueDistance(color.h, existing.h) < 0.06 &&
+                Math.abs(color.v - existing.v) < 0.25
+              ) {
+                return true;
+              }
+              return false;
+            });
+            if (!tooClose) picked.push(color);
           }
-          if (!picked.length && ranked.length) {
-            picked.push(ranked[0]);
-          }
+          if (!picked.length && ranked.length) picked.push(ranked[0]);
           resolve(picked.map((c) => rgbToHex(c.r, c.g, c.b)));
         } catch (err) {
           reject(err);
         }
       };
-      img.onerror = () => reject(new Error("Could not load capture image."));
+      img.onerror = () => reject(new Error("Could not load image for palette."));
       img.src = dataUrl;
     });
   }
@@ -2977,7 +3427,9 @@
         ? "capture"
         : targetRaw === "none"
           ? "none"
-          : "result";
+          : targetRaw === "text-remix-result"
+            ? "text-remix-result"
+            : "result";
     const existing = shadowRoot.querySelector(".sc-lightbox");
     if (existing) existing.remove();
 
@@ -3022,6 +3474,10 @@
       } else if (target === "result") {
         syncResultImage(working.url);
         if (rightWrapRef) showResult(rightWrapRef, working.url);
+      } else if (target === "text-remix-result") {
+        saveTextRemixMemory({ resultDataUrl: working.url }).then(() => {
+          refreshTextRemixUi();
+        });
       }
       lightbox.remove();
     };
@@ -3063,9 +3519,18 @@
             syncCaptureImage(url);
           } else if (target === "result") {
             syncResultImage(url);
+          } else if (target === "text-remix-result") {
+            textRemixMemory.resultDataUrl = url;
+            const remixImg = textRemixUi.resultWrap?.querySelector("img");
+            if (remixImg) remixImg.src = url;
           }
         },
-        editTargetLabel: target === "capture" ? "Capture" : "Generation",
+        editTargetLabel:
+          target === "capture"
+            ? "Capture"
+            : target === "text-remix-result"
+              ? "Result"
+              : "Generation",
         requestEdit: (presetId, editOpts) => requestEdit(presetId, editOpts),
         saveDataUrl: (url) => saveImageToComputer(null, url),
       });
@@ -3115,7 +3580,12 @@
 
   function showWorking(resultWrap, statusText) {
     resultWrap.innerHTML = "";
-    resultWrap.classList.remove("is-prompt", "is-palette", "is-palette-scroll");
+    resultWrap.classList.remove(
+      "is-prompt",
+      "is-palette",
+      "is-palette-scroll",
+      "is-meta-scroll"
+    );
     const status = document.createElement("div");
     status.className = "sc-status";
     const spinner = document.createElement("div");
@@ -3129,7 +3599,12 @@
 
   function showError(resultWrap, message) {
     resultWrap.innerHTML = "";
-    resultWrap.classList.remove("is-prompt", "is-palette", "is-palette-scroll");
+    resultWrap.classList.remove(
+      "is-prompt",
+      "is-palette",
+      "is-palette-scroll",
+      "is-meta-scroll"
+    );
     const statusErr = document.createElement("div");
     statusErr.className = "sc-status is-error";
     statusErr.textContent = message;
@@ -3266,6 +3741,7 @@
   async function requestEdit(presetId, opts) {
     const useAssets = Boolean(opts && opts.useAssets);
     const skipBlend = Boolean(opts && opts.skipBlend);
+    const preferDirect = Boolean(opts && opts.preferDirect);
     const sourceImage =
       (opts && opts.imageDataUrl) || resultDataUrl || croppedDataUrl;
     const customPrompt =
@@ -3310,8 +3786,9 @@
       );
     }
 
-    const message = {
-      type: "EDIT_IMAGE",
+    const aspectRatio =
+      opts && typeof opts.aspectRatio === "string" ? opts.aspectRatio.trim() : "";
+    const body = {
       imageDataUrl: imageForEdit,
       presetId: prepared.presetId,
       model: prepared.model,
@@ -3319,24 +3796,58 @@
       pageContext: prepared.pageContext || {},
       assets: useAssets ? prepared.assets || [] : [],
     };
-    const aspectRatio =
-      opts && typeof opts.aspectRatio === "string" ? opts.aspectRatio.trim() : "";
     if (aspectRatio && aspectRatio !== "original") {
-      message.aspectRatio = aspectRatio;
+      body.aspectRatio = aspectRatio;
     }
 
-    return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(message, (response) => {
-        if (chrome.runtime.lastError) {
-          reject(new Error(chrome.runtime.lastError.message));
-          return;
-        }
-        if (!response?.ok || !response.imageDataUrl) {
-          reject(new Error(response?.error || "Edit request failed"));
-          return;
-        }
-        resolve(response);
+    async function viaDirect() {
+      let response;
+      try {
+        response = await fetch("http://127.0.0.1:8787/api/edit", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      } catch (_err) {
+        throw new Error(
+          "Could not reach local server on port 8787. Start it and try again."
+        );
+      }
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.imageDataUrl) {
+        throw new Error(data.error || `Edit failed (${response.status})`);
+      }
+      return data;
+    }
+
+    async function viaServiceWorker() {
+      const message = {
+        type: "EDIT_IMAGE",
+        ...body,
+      };
+      return new Promise((resolve, reject) => {
+        chrome.runtime.sendMessage(message, (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          if (!response?.ok || !response.imageDataUrl) {
+            reject(new Error(response?.error || "Edit request failed"));
+            return;
+          }
+          resolve(response);
+        });
       });
-    });
+    }
+
+    if (preferDirect || presetId === "custom-prompt") {
+      try {
+        return await viaDirect();
+      } catch (err) {
+        console.warn("[edit] direct failed, trying service worker:", err?.message);
+        return viaServiceWorker();
+      }
+    }
+    return viaServiceWorker();
   }
 })();

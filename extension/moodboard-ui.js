@@ -168,6 +168,8 @@
       saveDataUrl,
       openPreview,
       materialIcon,
+      extractColors,
+      requestVariation,
     } = opts;
 
     const mountParent = hostEl || shadowRoot;
@@ -185,6 +187,10 @@
     let cornerRadius = Number(current.settings?.cornerRadius) || 28;
     let patternIndex = Number(current.settings?.patternIndex) || 0;
     let dragFromId = null;
+    let detailImage = null;
+    let selectedDetailHex = null;
+    let detailBusy = false;
+    let pointerDownOnTile = null;
 
     const overlay = document.createElement("div");
     overlay.className = embedded
@@ -222,8 +228,27 @@
     canvas.appendChild(previewActions);
     stage.appendChild(canvas);
 
+    const detailStage = document.createElement("div");
+    detailStage.className = "sc-moodboard-detail is-hidden";
+    const detailBlur = document.createElement("div");
+    detailBlur.className = "sc-moodboard-detail-blur";
+    const detailHeroWrap = document.createElement("div");
+    detailHeroWrap.className = "sc-moodboard-detail-hero";
+    const detailHero = document.createElement("img");
+    detailHero.alt = "Selected image";
+    detailHeroWrap.appendChild(detailHero);
+    detailStage.appendChild(detailBlur);
+    detailStage.appendChild(detailHeroWrap);
+    stage.appendChild(detailStage);
+
     const side = document.createElement("aside");
     side.className = "sc-moodboard-side";
+
+    const boardSide = document.createElement("div");
+    boardSide.className = "sc-moodboard-side-board";
+
+    const detailSide = document.createElement("div");
+    detailSide.className = "sc-moodboard-side-detail is-hidden";
 
     const sideHead = document.createElement("div");
     sideHead.className = "sc-moodboard-side-head";
@@ -347,17 +372,65 @@
     const hint = document.createElement("p");
     hint.className = "sc-moodboard-hint";
 
-    side.appendChild(sideHead);
-    side.appendChild(generateBtn);
-    side.appendChild(exportBtn);
-    side.appendChild(gutterSlider);
-    side.appendChild(radiusSlider);
-    side.appendChild(receiveToggle.row);
-    side.appendChild(themeToggle.row);
-    side.appendChild(hint);
+    boardSide.appendChild(sideHead);
+    boardSide.appendChild(generateBtn);
+    boardSide.appendChild(exportBtn);
+    boardSide.appendChild(gutterSlider);
+    boardSide.appendChild(radiusSlider);
+    boardSide.appendChild(receiveToggle.row);
+    boardSide.appendChild(themeToggle.row);
+    boardSide.appendChild(hint);
     if (!embedded) {
-      side.appendChild(closeBtn);
+      boardSide.appendChild(closeBtn);
     }
+
+    const detailHead = document.createElement("div");
+    detailHead.className = "sc-moodboard-side-head";
+    const detailTitle = document.createElement("h3");
+    detailTitle.className = "sc-moodboard-title";
+    detailTitle.textContent = "Details";
+    const detailSub = document.createElement("p");
+    detailSub.className = "sc-moodboard-sub";
+    detailSub.textContent = "Select a color, then generate a variation";
+    detailHead.appendChild(detailTitle);
+    detailHead.appendChild(detailSub);
+
+    const detailThumb = document.createElement("img");
+    detailThumb.className = "sc-moodboard-detail-thumb";
+    detailThumb.alt = "";
+
+    const colorsLabel = document.createElement("p");
+    colorsLabel.className = "sc-moodboard-detail-label";
+    colorsLabel.textContent = "Colors";
+
+    const colorsRow = document.createElement("div");
+    colorsRow.className = "sc-moodboard-detail-colors";
+
+    const variationBtn = document.createElement("button");
+    variationBtn.type = "button";
+    variationBtn.className = "sc-moodboard-generate sc-moodboard-variation-btn";
+    variationBtn.textContent = "+ Generate variation";
+    variationBtn.disabled = true;
+
+    const detailBackBtn = document.createElement("button");
+    detailBackBtn.type = "button";
+    detailBackBtn.className = "sc-moodboard-export";
+    detailBackBtn.textContent = "Back to board";
+
+    const detailHint = document.createElement("p");
+    detailHint.className = "sc-moodboard-hint";
+    detailHint.textContent = "Variation keeps layout and shifts the color theme.";
+
+    detailSide.appendChild(detailHead);
+    detailSide.appendChild(detailThumb);
+    detailSide.appendChild(colorsLabel);
+    detailSide.appendChild(colorsRow);
+    detailSide.appendChild(variationBtn);
+    detailSide.appendChild(detailHint);
+    detailSide.appendChild(detailBackBtn);
+
+    side.appendChild(boardSide);
+    side.appendChild(detailSide);
 
     shell.appendChild(stage);
     shell.appendChild(side);
@@ -381,6 +454,7 @@
 
     function applyGridTheme() {
       const isLight = gridTheme === "light";
+      shell.classList.toggle("is-grid-light", isLight);
       stage.classList.toggle("is-grid-light", isLight);
       canvas.classList.toggle("is-grid-light", isLight);
       side.classList.toggle("is-grid-light", isLight);
@@ -477,7 +551,19 @@
         picture.draggable = false;
         tile.appendChild(picture);
 
+        tile.addEventListener("pointerdown", (e) => {
+          if (e.button !== 0) return;
+          pointerDownOnTile = {
+            imageId: img.id,
+            x: e.clientX,
+            y: e.clientY,
+            dragged: false,
+          };
+        });
         tile.addEventListener("dragstart", (e) => {
+          if (pointerDownOnTile?.imageId === img.id) {
+            pointerDownOnTile.dragged = true;
+          }
           dragFromId = img.id;
           tile.classList.add("is-dragging");
           e.dataTransfer.effectAllowed = "move";
@@ -523,9 +609,118 @@
             alert(err?.message || "Could not reorder images");
           }
         });
+        tile.addEventListener("click", (e) => {
+          const down = pointerDownOnTile;
+          pointerDownOnTile = null;
+          if (!down || down.imageId !== img.id) return;
+          const moved =
+            down.dragged ||
+            Math.abs(e.clientX - down.x) > 6 ||
+            Math.abs(e.clientY - down.y) > 6;
+          if (moved) return;
+          e.preventDefault();
+          e.stopPropagation();
+          openImageDetail(img);
+        });
 
         grid.appendChild(tile);
       });
+    }
+
+    function setDetailBusy(busy) {
+      detailBusy = Boolean(busy);
+      variationBtn.disabled = detailBusy || !selectedDetailHex;
+      variationBtn.classList.toggle("is-busy", detailBusy);
+      variationBtn.textContent = detailBusy
+        ? "Generating…"
+        : "+ Generate variation";
+      colorsRow
+        .querySelectorAll(".sc-mb-color-dot")
+        .forEach((el) => {
+          el.disabled = detailBusy;
+        });
+    }
+
+    function renderDetailColors(hexes) {
+      colorsRow.innerHTML = "";
+      const list = Array.isArray(hexes) ? hexes : [];
+      selectedDetailHex = list[0] || null;
+      list.forEach((hex) => {
+        const dot = document.createElement("button");
+        dot.type = "button";
+        dot.className = "sc-mb-color-dot";
+        dot.style.background = hex;
+        dot.title = hex;
+        dot.setAttribute("aria-label", `Select color ${hex}`);
+        if (hex === selectedDetailHex) dot.classList.add("is-selected");
+        dot.addEventListener("click", (e) => {
+          e.stopPropagation();
+          if (detailBusy) return;
+          selectedDetailHex = hex;
+          colorsRow
+            .querySelectorAll(".sc-mb-color-dot")
+            .forEach((el) => el.classList.remove("is-selected"));
+          dot.classList.add("is-selected");
+          variationBtn.disabled = !selectedDetailHex || detailBusy;
+        });
+        colorsRow.appendChild(dot);
+      });
+      variationBtn.disabled = !selectedDetailHex || detailBusy;
+      if (!list.length) {
+        detailHint.textContent = "No colors found for this image.";
+      } else {
+        detailHint.textContent =
+          "Variation keeps layout and shifts the color theme.";
+      }
+    }
+
+    async function openImageDetail(img) {
+      if (!img?.dataUrl) return;
+      detailImage = img;
+      selectedDetailHex = null;
+      detailHero.src = img.dataUrl;
+      detailThumb.src = img.dataUrl;
+      detailBlur.style.backgroundImage = `url("${img.dataUrl}")`;
+      canvas.classList.add("is-hidden");
+      previewActions.classList.add("is-hidden");
+      detailStage.classList.remove("is-hidden");
+      boardSide.classList.add("is-hidden");
+      detailSide.classList.remove("is-hidden");
+      shell.classList.add("is-detail");
+      colorsRow.innerHTML = "";
+      colorsRow.textContent = "Extracting colors…";
+      variationBtn.disabled = true;
+      try {
+        const hexes = extractColors
+          ? await extractColors(img.dataUrl)
+          : [];
+        if (detailImage?.id !== img.id) return;
+        colorsRow.textContent = "";
+        renderDetailColors(hexes);
+      } catch (err) {
+        console.error(err);
+        if (detailImage?.id !== img.id) return;
+        colorsRow.textContent = "";
+        renderDetailColors([]);
+        detailHint.textContent =
+          err?.message || "Could not extract colors from this image.";
+      }
+    }
+
+    function closeImageDetail() {
+      detailImage = null;
+      selectedDetailHex = null;
+      detailBusy = false;
+      detailHero.removeAttribute("src");
+      detailThumb.removeAttribute("src");
+      detailBlur.style.backgroundImage = "";
+      detailStage.classList.add("is-hidden");
+      boardSide.classList.remove("is-hidden");
+      detailSide.classList.add("is-hidden");
+      shell.classList.remove("is-detail");
+      canvas.classList.remove("is-hidden");
+      setDetailBusy(false);
+      applyLayout();
     }
 
     function roundRect(ctx, x, y, w, h, r) {
@@ -697,6 +892,10 @@
     const onKey = (e) => {
       if (e.key === "Escape") {
         e.stopPropagation();
+        if (detailImage) {
+          closeImageDetail();
+          return;
+        }
         close();
       }
     };
@@ -713,6 +912,42 @@
         close();
       });
     }
+    detailBackBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeImageDetail();
+    });
+    variationBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (detailBusy || !detailImage?.dataUrl || !selectedDetailHex) return;
+      if (!requestVariation) {
+        alert("Variation is unavailable in this view.");
+        return;
+      }
+      setDetailBusy(true);
+      try {
+        const data = await requestVariation({
+          imageDataUrl: detailHero.src || detailImage.dataUrl,
+          hex: selectedDetailHex,
+        });
+        const nextUrl = data?.imageDataUrl;
+        if (!nextUrl) throw new Error("No image returned.");
+        detailHero.src = nextUrl;
+        detailThumb.src = nextUrl;
+        detailBlur.style.backgroundImage = `url("${nextUrl}")`;
+        detailImage = { ...detailImage, dataUrl: nextUrl };
+        try {
+          const hexes = extractColors ? await extractColors(nextUrl) : [];
+          renderDetailColors(hexes);
+        } catch (_err) {
+          /* keep prior palette */
+        }
+      } catch (err) {
+        console.error(err);
+        alert(err?.message || "Could not generate variation.");
+      } finally {
+        setDetailBusy(false);
+      }
+    });
     generateBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       const images = current.images || [];

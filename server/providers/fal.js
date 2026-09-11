@@ -5,13 +5,18 @@ const FAL_ENDPOINT = "https://fal.run/fal-ai/flux/dev/image-to-image";
  * @param {{ imageDataUrl: string, prompt: string, apiKey: string }} args
  * @returns {Promise<string>} result image as data URL
  */
-async function editWithFal({ imageDataUrl, prompt, apiKey }) {
+async function editWithFal({ imageDataUrl, prompt, apiKey, strength }) {
   if (!apiKey) {
     throw new Error("FAL_KEY is not set");
   }
   if (!imageDataUrl || typeof imageDataUrl !== "string") {
     throw new Error("Invalid imageDataUrl");
   }
+
+  const strengthValue =
+    typeof strength === "number" && strength > 0 && strength <= 1
+      ? strength
+      : 0.85;
 
   const response = await fetch(FAL_ENDPOINT, {
     method: "POST",
@@ -22,7 +27,7 @@ async function editWithFal({ imageDataUrl, prompt, apiKey }) {
     body: JSON.stringify({
       image_url: imageDataUrl,
       prompt,
-      strength: 0.85,
+      strength: strengthValue,
       num_inference_steps: 28,
       enable_safety_checker: true,
     }),

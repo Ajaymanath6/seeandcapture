@@ -113,7 +113,9 @@ function buildTextSwapUserPrompt(replacements, languageLabel) {
     : "Swap on-image text as listed.";
   return (
     `${header}\n` +
-    `Completely remove/erase the old glyphs (inpaint the background texture underneath), then render the new copy in the same place matching font style, weight, color, perspective, shadows, and lighting as closely as possible. Keep the rest of the graphic unchanged. Scale text to fit existing regions.\n\n` +
+    `Completely remove/erase the old glyphs (inpaint the background texture underneath), then render the new copy in the same place matching font style, weight, color, perspective, shadows, and lighting as closely as possible. ` +
+    `Keep the rest of the graphic unchanged. Scale text to fit existing regions. ` +
+    `Do not replace the entire image. Do not invent a new photo, scene, or background.\n\n` +
     (lines.length ? `Replacements:\n${lines.join("\n")}` : "No text changes.")
   );
 }
