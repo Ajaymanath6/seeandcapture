@@ -202,6 +202,43 @@
     });
   }
 
+  async function removeImage(boardId, imageId) {
+    if (!imageId) throw new Error("Image id is required");
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const store = tx.objectStore(STORE);
+      const request = store.get(boardId);
+      request.onsuccess = () => {
+        const board = request.result;
+        if (!board) {
+          reject(new Error("Moodboard not found"));
+          return;
+        }
+        const before = Array.isArray(board.images) ? board.images : [];
+        board.images = before.filter((img) => img && img.id !== imageId);
+        if (board.images.length === before.length) {
+          reject(new Error("Image not found on moodboard"));
+          return;
+        }
+        board.updatedAt = Date.now();
+        store.put(board);
+        tx.oncomplete = () => {
+          db.close();
+          resolve(board);
+        };
+      };
+      request.onerror = () => {
+        db.close();
+        reject(request.error);
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    });
+  }
+
   async function reorderImages(boardId, orderedIds) {
     const db = await openDb();
     return new Promise((resolve, reject) => {
@@ -308,6 +345,7 @@
     getLastMoodboard,
     createMoodboard,
     addImage,
+    removeImage,
     updateSettings,
     reorderImages,
     touchOpened,

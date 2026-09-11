@@ -170,6 +170,7 @@
       materialIcon,
       extractColors,
       requestVariation,
+      showToast,
     } = opts;
 
     const mountParent = hostEl || shadowRoot;
@@ -191,6 +192,10 @@
     let selectedDetailHex = null;
     let detailBusy = false;
     let pointerDownOnTile = null;
+    let selectMode = false;
+    const selectedImageIds = new Set();
+    const PASTE_QUEUE_URL = "http://127.0.0.1:8787/api/paste-queue";
+    const PASTE_GAP_MS = 1200;
 
     const overlay = document.createElement("div");
     overlay.className = embedded
@@ -236,7 +241,18 @@
     detailHeroWrap.className = "sc-moodboard-detail-hero";
     const detailHero = document.createElement("img");
     detailHero.alt = "Selected image";
+    const detailDeleteBtn = document.createElement("button");
+    detailDeleteBtn.type = "button";
+    detailDeleteBtn.className = "sc-preview-btn sc-moodboard-detail-delete";
+    detailDeleteBtn.setAttribute("aria-label", "Remove from moodboard");
+    detailDeleteBtn.title = "Remove from moodboard";
+    if (materialIcon) {
+      detailDeleteBtn.appendChild(materialIcon("delete"));
+    } else {
+      detailDeleteBtn.textContent = "⌫";
+    }
     detailHeroWrap.appendChild(detailHero);
+    detailHeroWrap.appendChild(detailDeleteBtn);
     detailStage.appendChild(detailBlur);
     detailStage.appendChild(detailHeroWrap);
     stage.appendChild(detailStage);
@@ -372,9 +388,26 @@
     const hint = document.createElement("p");
     hint.className = "sc-moodboard-hint";
 
+    const selectModeToggle = makeToggle("Select for AI copy", false, (on) => {
+      selectMode = on;
+      if (!selectMode) selectedImageIds.clear();
+      applyLayout();
+      syncCopyAiUi();
+    });
+
+    const copyAiBtn = document.createElement("button");
+    copyAiBtn.type = "button";
+    copyAiBtn.className = "sc-moodboard-generate sc-moodboard-copy-ai";
+    copyAiBtn.textContent = "Copy for AI (Sequential)";
+    copyAiBtn.disabled = true;
+    copyAiBtn.title =
+      "Select images, then copy once. Paste repeatedly (⌘V / Ctrl+V) in any field — each image lands ~1.2s apart.";
+
     boardSide.appendChild(sideHead);
     boardSide.appendChild(generateBtn);
     boardSide.appendChild(exportBtn);
+    boardSide.appendChild(selectModeToggle.row);
+    boardSide.appendChild(copyAiBtn);
     boardSide.appendChild(gutterSlider);
     boardSide.appendChild(radiusSlider);
     boardSide.appendChild(receiveToggle.row);
@@ -414,7 +447,7 @@
 
     const detailBackBtn = document.createElement("button");
     detailBackBtn.type = "button";
-    detailBackBtn.className = "sc-moodboard-export";
+    detailBackBtn.className = "sc-moodboard-export sc-moodboard-detail-back";
     detailBackBtn.textContent = "Back to board";
 
     const detailHint = document.createElement("p");
@@ -487,6 +520,68 @@
 
     applyGridTheme();
 
+    function syncCopyAiUi() {
+      const n = selectedImageIds.size;
+      copyAiBtn.disabled = !selectMode || n < 1;
+      copyAiBtn.textContent =
+        n > 0
+          ? `Copy ${n} for AI (Sequential)`
+          : "Copy for AI (Sequential)";
+      selectModeToggle.label.textContent = selectMode
+        ? n
+          ? `Select for AI · ${n} selected`
+          : "Select for AI copy"
+        : "Select for AI copy";
+      grid.classList.toggle("is-select-mode", selectMode);
+    }
+
+    function notifyToast(title, sub) {
+      if (typeof showToast === "function") showToast(title, sub);
+      else if (typeof opts?.showToast === "function") opts.showToast(title, sub);
+    }
+
+    async function copySelectedForAiSequential() {
+      const images = current.images || [];
+      const ordered = images.filter((img) => selectedImageIds.has(img.id));
+      if (!ordered.length) return;
+      copyAiBtn.disabled = true;
+      try {
+        const response = await fetch(PASTE_QUEUE_URL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            delayMs: PASTE_GAP_MS,
+            images: ordered.map((img) => ({
+              id: img.id,
+              dataUrl: img.dataUrl,
+            })),
+          }),
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || `Paste queue failed (${response.status})`);
+        }
+        const count = data.count || ordered.length;
+        const gapSec = ((data.delayMs || PASTE_GAP_MS) / 1000).toFixed(1);
+        notifyToast(
+          `${count} ready`,
+          `Paste repeatedly in any field · ~${gapSec}s apart`
+        );
+      } catch (err) {
+        console.error(err);
+        notifyToast(
+          "Paste queue failed",
+          err?.message || "Is the local server running?"
+        );
+        alert(
+          err?.message ||
+            "Could not start paste queue. Start the local server (port 8787), and on Linux install xclip or wl-clipboard."
+        );
+      } finally {
+        syncCopyAiUi();
+      }
+    }
+
     function applyLayout() {
       const images = current.images || [];
       const total = images.length;
@@ -496,9 +591,13 @@
       if (useBento) {
         patternIndex = ((patternIndex % variants) + variants) % variants;
       }
-      subtitle.textContent = `${total} image(s)`;
+      subtitle.textContent = selectMode
+        ? `${total} image(s) · ${selectedImageIds.size} selected`
+        : `${total} image(s)`;
       if (!total) {
         hint.textContent = "Add more captures to grow this bento grid.";
+      } else if (selectMode) {
+        hint.textContent = "Click tiles to select · order follows board order";
       } else if (useBento) {
         hint.textContent =
           total > 1
@@ -511,7 +610,8 @@
       empty.classList.toggle("is-hidden", total > 0);
       grid.classList.toggle("is-hidden", total === 0);
       grid.classList.toggle("is-dense", total > 8);
-      previewActions.classList.toggle("is-hidden", total === 0);
+      grid.classList.toggle("is-select-mode", selectMode);
+      previewActions.classList.toggle("is-hidden", total === 0 || selectMode);
       generateBtn.disabled = total > 8;
       generateBtn.title =
         total > 8
@@ -537,12 +637,13 @@
       images.forEach((img, index) => {
         const tile = document.createElement("div");
         tile.className = "sc-moodboard-tile";
+        if (selectedImageIds.has(img.id)) tile.classList.add("is-selected");
         if (useBento) {
           tile.style.gridArea = AREA_KEYS[index] || "a";
         } else {
           tile.style.gridArea = "";
         }
-        tile.draggable = true;
+        tile.draggable = !selectMode;
         tile.dataset.imageId = img.id;
 
         const picture = document.createElement("img");
@@ -550,6 +651,13 @@
         picture.alt = "";
         picture.draggable = false;
         tile.appendChild(picture);
+
+        if (selectMode) {
+          const check = document.createElement("span");
+          check.className = "sc-moodboard-tile-check";
+          check.setAttribute("aria-hidden", "true");
+          tile.appendChild(check);
+        }
 
         tile.addEventListener("pointerdown", (e) => {
           if (e.button !== 0) return;
@@ -561,6 +669,10 @@
           };
         });
         tile.addEventListener("dragstart", (e) => {
+          if (selectMode) {
+            e.preventDefault();
+            return;
+          }
           if (pointerDownOnTile?.imageId === img.id) {
             pointerDownOnTile.dragged = true;
           }
@@ -577,6 +689,7 @@
             .forEach((el) => el.classList.remove("is-drop"));
         });
         tile.addEventListener("dragover", (e) => {
+          if (selectMode) return;
           e.preventDefault();
           tile.classList.add("is-drop");
         });
@@ -584,6 +697,7 @@
           tile.classList.remove("is-drop");
         });
         tile.addEventListener("drop", async (e) => {
+          if (selectMode) return;
           e.preventDefault();
           tile.classList.remove("is-drop");
           const fromId = dragFromId || e.dataTransfer.getData("text/plain");
@@ -620,11 +734,20 @@
           if (moved) return;
           e.preventDefault();
           e.stopPropagation();
+          if (selectMode) {
+            if (selectedImageIds.has(img.id)) selectedImageIds.delete(img.id);
+            else selectedImageIds.add(img.id);
+            tile.classList.toggle("is-selected", selectedImageIds.has(img.id));
+            syncCopyAiUi();
+            subtitle.textContent = `${(current.images || []).length} image(s) · ${selectedImageIds.size} selected`;
+            return;
+          }
           openImageDetail(img);
         });
 
         grid.appendChild(tile);
       });
+      syncCopyAiUi();
     }
 
     function setDetailBusy(busy) {
@@ -875,7 +998,7 @@
     async function previewBento() {
       try {
         const dataUrl = await renderBentoDataUrl();
-        if (openPreview) openPreview(dataUrl);
+        if (openPreview) openPreview(dataUrl, { theme: gridTheme });
         else if (saveDataUrl) await saveDataUrl(dataUrl);
       } catch (err) {
         console.error(err);
@@ -916,6 +1039,24 @@
       e.stopPropagation();
       closeImageDetail();
     });
+    detailDeleteBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (!detailImage?.id || detailBusy) return;
+      if (!confirm("Remove this image from the moodboard?")) return;
+      try {
+        current = await window.SeeCaptureMoodboards.removeImage(
+          current.id,
+          detailImage.id
+        );
+        onBoardUpdated?.(current);
+        closeImageDetail();
+        applyLayout();
+      } catch (err) {
+        console.error(err);
+        alert(err?.message || "Could not remove image");
+      }
+    });
     variationBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
       if (detailBusy || !detailImage?.dataUrl || !selectedDetailHex) return;
@@ -948,6 +1089,10 @@
         setDetailBusy(false);
       }
     });
+    copyAiBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      copySelectedForAiSequential();
+    });
     generateBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       const images = current.images || [];
@@ -976,6 +1121,10 @@
 
     return {
       close,
+      isDetailOpen: () => Boolean(detailImage),
+      closeDetail: () => {
+        if (detailImage) closeImageDetail();
+      },
       refresh: (boardNext) => {
         current = boardNext;
         gutter = Number(current.settings?.gutter) || gutter;

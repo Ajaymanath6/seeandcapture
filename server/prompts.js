@@ -23,6 +23,17 @@ const PRESETS = {
     prompt:
       "Convert this exact image to black and white. Keep composition, subjects, and detail identical—only remove color.",
   },
+  "similar-variant": {
+    id: "similar-variant",
+    label: "Generate similar",
+    mode: "similar-variant",
+    prompt:
+      `${PRESERVE} ` +
+      "Create a subtle variation of this exact image. Keep subjects, composition, framing, camera angle, " +
+      "and overall style about 99% identical. Only apply small natural changes " +
+      "(lighting nuance, micro-texture, slight expression or surface detail). " +
+      "Do not invent a new scene, subject, layout, or style. Return one edited image.",
+  },
   "replace-with-asset": {
     id: "replace-with-asset",
     label: "Replace with your asset",

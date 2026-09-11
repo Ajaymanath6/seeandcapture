@@ -26,6 +26,11 @@ const {
   buildTranslateInstruction,
   buildTextSwapUserPrompt,
 } = require("./lib/textDetect");
+const {
+  PASTE_GAP_MS,
+  enqueuePasteQueue,
+  getPasteQueueStatus,
+} = require("./paste-queue");
 
 const PORT = Number(process.env.PORT) || 8787;
 const HOST = process.env.HOST || "127.0.0.1";
@@ -128,6 +133,21 @@ app.get("/health", (_req, res) => {
 
 app.get("/api/presets", (_req, res) => {
   res.json({ presets: listPresetMeta() });
+});
+
+app.post("/api/paste-queue", async (req, res) => {
+  try {
+    const { images, delayMs } = req.body || {};
+    const result = await enqueuePasteQueue({ images, delayMs });
+    res.status(202).json(result);
+  } catch (err) {
+    console.error("[paste-queue]", err?.message || err);
+    res.status(400).json({ error: err?.message || "Paste queue failed" });
+  }
+});
+
+app.get("/api/paste-queue/status", (_req, res) => {
+  res.json({ ok: true, ...getPasteQueueStatus(), defaultDelayMs: PASTE_GAP_MS });
 });
 
 app.post("/api/detect-text", async (req, res) => {
@@ -425,7 +445,19 @@ app.post("/api/edit", async (req, res) => {
     let editImageDataUrl = imageDataUrl;
     const isTextSwap = preset.mode === "text-swap";
     const isCustomPrompt = preset.mode === "eden-custom-prompt";
-    if (isCustomPrompt) {
+    const isSimilarVariant = preset.mode === "similar-variant";
+    if (isSimilarVariant) {
+      basePrompt = preset.prompt;
+      try {
+        editImageDataUrl = downscaleImageDataUrl(imageDataUrl);
+      } catch (err) {
+        console.warn(
+          "[edit] similar-variant downscale failed:",
+          err?.message || err
+        );
+        editImageDataUrl = imageDataUrl;
+      }
+    } else if (isCustomPrompt) {
       if (!userPrompt) {
         res.status(400).json({
           error: "custom-prompt requires a prompt string",
@@ -543,11 +575,18 @@ app.post("/api/edit", async (req, res) => {
         imageDataUrl: editImageDataUrl,
         prompt: promptWithContext,
         preferred: usedModel,
-        isCustom: isCustomPrompt,
+        isCustom: isCustomPrompt || isSimilarVariant,
         aspectRatio,
-        skipEden: isTextSwap || isCustomPrompt,
-        enableTranslation: isTextSwap || isCustomPrompt ? false : true,
-        falStrength: isTextSwap ? 0.35 : isCustomPrompt ? 0.45 : null,
+        skipEden: isTextSwap || isCustomPrompt || isSimilarVariant,
+        enableTranslation:
+          isTextSwap || isCustomPrompt || isSimilarVariant ? false : true,
+        falStrength: isSimilarVariant
+          ? 0.3
+          : isTextSwap
+            ? 0.35
+            : isCustomPrompt
+              ? 0.45
+              : null,
       });
       resultDataUrl = ai.imageDataUrl;
       usedModel = ai.model;

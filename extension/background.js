@@ -165,6 +165,12 @@ async function handleMoodboardMessage(message) {
       await rebuildContextMenus();
       return board;
     }
+    case "MOODBOARD_REMOVE_IMAGE": {
+      const board = await store.removeImage(message.boardId, message.imageId);
+      await syncReceiversFromStore();
+      await rebuildContextMenus();
+      return board;
+    }
     case "MOODBOARD_UPDATE_SETTINGS": {
       const board = await store.updateSettings(
         message.boardId,

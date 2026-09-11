@@ -21,6 +21,7 @@
   let leftLabelRef = null;
   let rightLabelRef = null;
   let selectedPane = "capture";
+  let resultIsBlackWhite = false;
   let modalRef = null;
   let bodyRef = null;
   let composerRef = null;
@@ -377,6 +378,7 @@
     modalOpen = false;
     croppedDataUrl = null;
     resultDataUrl = null;
+    resultIsBlackWhite = false;
     inFlight = false;
     pageContext = {};
     contextEnabled = false;
@@ -669,6 +671,8 @@
       "M4 4h7V2H4c-1.1 0-2 .9-2 2v7h2V4zm6 10-4.5 6h13L14 12l-3 4-1-1.5zM17 8.5c0-.83-.67-1.5-1.5-1.5S14 7.67 14 8.5s.67 1.5 1.5 1.5S17 9.33 17 8.5zM20 2h-7v2h7v7h2V4c0-1.1-.9-2-2-2zm0 18h-7v2h7c1.1 0 2-.9 2-2v-7h-2v7zM4 13H2v7c0 1.1.9 2 2 2h7v-2H4v-7z",
     grass:
       "M12 22c4.97 0 9-2.16 9-5.5 0-1.52-1.05-2.87-2.72-3.86.17-.54.27-1.1.27-1.69C18.55 7.84 15.64 5 12 5S5.45 7.84 5.45 10.95c0 .59.1 1.15.27 1.69C4.05 13.63 3 14.98 3 16.5 3 19.84 7.03 22 12 22z",
+    delete:
+      "M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z",
   };
 
   function materialIcon(name, className) {
@@ -683,6 +687,7 @@
   async function showModal(captureDataUrl, opts) {
     modalOpen = true;
     resultDataUrl = null;
+    resultIsBlackWhite = false;
     croppedDataUrl = captureDataUrl || null;
     selectedAssetIds = [];
     selectedAssetMeta = {};
@@ -1948,6 +1953,7 @@
     quick.className = "sc-quick-actions";
     const quickDefs = [
       { id: "black-white", label: "Black and white" },
+      { id: "similar-variant", label: "Generate similar" },
       { id: "remove-bg", label: "Remove background" },
       { id: "get-prompt", label: "Get the prompt" },
       { id: "extract-palette", label: "Extract palette" },
@@ -1961,6 +1967,7 @@
       btn.addEventListener("click", () => {
         if (def.id === "get-prompt") runGetPrompt();
         else if (def.id === "extract-palette") runExtractPalette();
+        else if (def.id === "similar-variant") runGenerateSimilar(rightWrap);
         else runQuickPreset(def.id, rightWrap);
       });
       quick.appendChild(btn);
@@ -2373,7 +2380,9 @@
         imageDataUrl: resultDataUrl || croppedDataUrl,
         useAssets: false,
       });
-      showResult(rightWrap, data.imageDataUrl);
+      showResult(rightWrap, data.imageDataUrl, {
+        fromBlackWhite: presetId === "black-white",
+      });
       chrome.runtime.sendMessage({
         type: "SAVE_RESULT",
         presetId,
@@ -2386,6 +2395,52 @@
         formatProviderError(
           err?.message,
           "Request failed. Is the local server running on port 8787?"
+        )
+      );
+    } finally {
+      inFlight = false;
+      if (applyBtnRef) applyBtnRef.disabled = false;
+      buttons.forEach((b) => {
+        b.disabled = false;
+      });
+    }
+  }
+
+  async function runGenerateSimilar(rightWrap) {
+    const sourceUrl =
+      selectedPane === "result" && resultDataUrl
+        ? resultDataUrl
+        : croppedDataUrl || resultDataUrl;
+    if (inFlight || !sourceUrl || !rightWrap) return;
+    inFlight = true;
+    if (applyBtnRef) applyBtnRef.disabled = true;
+    const buttons = shadowRoot
+      ? [...shadowRoot.querySelectorAll(".sc-quick-btn")]
+      : [];
+    buttons.forEach((b) => {
+      b.disabled = true;
+    });
+    setRightPaneLabel("Generation");
+    showWorking(rightWrap, "Generating similar…");
+    try {
+      const data = await requestEdit("similar-variant", {
+        imageDataUrl: sourceUrl,
+        useAssets: false,
+        preferDirect: true,
+      });
+      showResult(rightWrap, data.imageDataUrl);
+      chrome.runtime.sendMessage({
+        type: "SAVE_RESULT",
+        presetId: "similar-variant",
+        captureDataUrl: croppedDataUrl,
+        resultDataUrl: data.imageDataUrl,
+      });
+    } catch (err) {
+      showError(
+        rightWrap,
+        formatProviderError(
+          err?.message,
+          "Could not generate a similar variant. Is the local server running on port 8787?"
         )
       );
     } finally {
@@ -2617,6 +2672,18 @@
       rightWrapRef.classList.toggle("is-selected", on);
       rightWrapRef.setAttribute("aria-pressed", on ? "true" : "false");
     }
+    updateQuickActionVisibility();
+  }
+
+  function updateQuickActionVisibility() {
+    if (!shadowRoot) return;
+    const bwBtn = shadowRoot.querySelector(
+      '.sc-quick-btn[data-preset-id="black-white"]'
+    );
+    if (!bwBtn) return;
+    const hide = selectedPane === "result" && resultIsBlackWhite;
+    bwBtn.classList.toggle("is-hidden", hide);
+    bwBtn.hidden = hide;
   }
 
   function getCurrentSaveImage() {
@@ -2789,25 +2856,32 @@
         meta.className = "sc-board-chip-meta";
         meta.textContent = `${count} image${count === 1 ? "" : "s"}`;
 
+        const stackRow = document.createElement("div");
+        stackRow.className = "sc-board-chip-stack-row";
+
         const previews = document.createElement("div");
         previews.className = "sc-board-chip-previews";
-        const maxThumbs = 2;
-        (board.images || []).slice(0, maxThumbs).forEach((img) => {
+        const maxThumbs = 4;
+        const thumbs = (board.images || []).slice(0, maxThumbs);
+        thumbs.forEach((img, index) => {
           const thumb = document.createElement("img");
           thumb.src = img.dataUrl;
           thumb.alt = "";
+          thumb.style.setProperty("--sc-stack-i", String(index));
           previews.appendChild(thumb);
         });
+
+        stackRow.appendChild(previews);
         if (count > maxThumbs) {
           const more = document.createElement("span");
           more.className = "sc-board-chip-more";
           more.textContent = `+${count - maxThumbs}`;
-          previews.appendChild(more);
+          stackRow.appendChild(more);
         }
 
         chip.appendChild(nameEl);
         chip.appendChild(meta);
-        chip.appendChild(previews);
+        chip.appendChild(stackRow);
         chip.addEventListener("click", async () => {
           await openMoodboardViewer(board.id);
         });
@@ -2889,19 +2963,20 @@
       }
       clearModalSubviews();
       hideCaptureChrome();
-      showHeaderBack(() => {
-        moodboardViewerApi = null;
-        restoreCaptureView();
-      });
       moodboardViewerApi = ui.mountMoodboardViewer({
         hostEl: modalRef,
         embedded: true,
         board,
         materialIcon,
         saveDataUrl: (url) => saveImageToComputer(null, url),
-        openPreview: (url) =>
-          openImagePreview(url, { mode: "preview", target: "none" }),
+        openPreview: (url, previewOpts) =>
+          openImagePreview(url, {
+            mode: "preview",
+            target: "none",
+            theme: previewOpts?.theme === "light" ? "light" : "dark",
+          }),
         extractColors: (dataUrl) => extractTopColors(dataUrl, 5),
+        showToast: (title, sub) => showAppToast(title, sub),
         requestVariation: async ({ imageDataUrl, hex }) => {
           const color = String(hex || "").trim();
           try {
@@ -2929,6 +3004,18 @@
           moodboardViewerApi = null;
           restoreCaptureView();
         },
+      });
+      showHeaderBack(() => {
+        if (moodboardViewerApi?.isDetailOpen?.()) {
+          moodboardViewerApi.closeDetail();
+          return;
+        }
+        if (moodboardViewerApi?.close) {
+          moodboardViewerApi.close();
+          return;
+        }
+        moodboardViewerApi = null;
+        restoreCaptureView();
       });
     } catch (err) {
       console.error(err);
@@ -3059,8 +3146,8 @@
     wrap.appendChild(actions);
   }
 
-  function showResult(resultWrap, dataUrl) {
-    clearCapturePromptStack();
+  function showResult(resultWrap, dataUrl, opts) {
+    resultIsBlackWhite = Boolean(opts && opts.fromBlackWhite);
     setRightPaneLabel("Generation");
     resultWrap.innerHTML = "";
     resultWrap.classList.remove(
@@ -3165,11 +3252,9 @@
     }
 
     if (actionTarget === "capture") {
-      setLeftPaneLabel("Capture · Prompt");
+      setLeftPaneLabel("Prompt");
     } else {
-      setRightPaneLabel(
-        resultDataUrl ? "Generation · Prompt" : "Prompt"
-      );
+      setRightPaneLabel("Prompt");
     }
 
     wrap.classList.remove("is-prompt", "is-palette");
@@ -3437,6 +3522,9 @@
 
     const lightbox = document.createElement("div");
     lightbox.className = "sc-lightbox";
+    if (opts && opts.theme === "light") {
+      lightbox.classList.add("is-light");
+    }
     lightbox.setAttribute("role", "dialog");
     lightbox.setAttribute(
       "aria-label",
@@ -3840,7 +3928,11 @@
       });
     }
 
-    if (preferDirect || presetId === "custom-prompt") {
+    if (
+      preferDirect ||
+      presetId === "custom-prompt" ||
+      presetId === "similar-variant"
+    ) {
       try {
         return await viaDirect();
       } catch (err) {
