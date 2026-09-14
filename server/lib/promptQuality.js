@@ -53,8 +53,60 @@ function assertPromptQuality(text) {
   return { ok: true, prompt };
 }
 
+/**
+ * Parse style JSON from vision model output.
+ * @param {string} text
+ * @returns {{ ok: true, title: string, tags: string[], description: string } | { ok: false, reason: string }}
+ */
+function parseStylePayload(text) {
+  const raw = normalizePromptText(text);
+  if (!raw) {
+    return { ok: false, reason: "Empty style response" };
+  }
+  let parsed = null;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (_err) {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        parsed = JSON.parse(match[0]);
+      } catch (_err2) {
+        return { ok: false, reason: "Style response was not valid JSON" };
+      }
+    } else {
+      return { ok: false, reason: "Style response was not valid JSON" };
+    }
+  }
+  const title = String(parsed?.title || "").trim();
+  const description = String(parsed?.description || "").trim();
+  const tags = Array.isArray(parsed?.tags)
+    ? parsed.tags
+        .map((t) => String(t || "").trim())
+        .filter(Boolean)
+        .slice(0, 8)
+    : [];
+  if (!title || title.length < 2) {
+    return { ok: false, reason: "Style title missing" };
+  }
+  const checked = assertPromptQuality(description);
+  if (!checked.ok) {
+    return {
+      ok: false,
+      reason: checked.reason.replace(/Prompt/g, "Style description"),
+    };
+  }
+  return {
+    ok: true,
+    title: title.slice(0, 80),
+    tags,
+    description: checked.prompt,
+  };
+}
+
 module.exports = {
   MIN_PROMPT_CHARS,
   normalizePromptText,
   assertPromptQuality,
+  parseStylePayload,
 };

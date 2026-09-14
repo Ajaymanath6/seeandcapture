@@ -10,6 +10,19 @@ Rules:
 - Describe only what is actually visible. Do not invent objects, people, or scenery that are not in the image.
 - Output only the prompt text itself—no title, markdown, labels, bullet lists, or commentary.`;
 
+const DESCRIBE_STYLE_INSTRUCTION = `Study the attached image. Extract its transferable VISUAL STYLE only — not a remake of this exact subject or scene.
+
+Return ONLY valid JSON (no markdown fences, no commentary) with this shape:
+{"title":"short style name","tags":["tag1","tag2","tag3"],"description":"one reusable style paragraph"}
+
+Rules:
+- title: a concise art-direction name (e.g. "Nocturne glassmorphism", "Soft clay render", "Editorial film grain").
+- tags: 3 to 6 short tags for texture, medium, lighting, or form language.
+- description: one dense paragraph of reusable style DNA — materials/texture, lighting & depth, color grading/mood, form language (edges, blur, grain, gloss). Write it so someone can paste it onto a DIFFERENT subject.
+- Do NOT name or describe the specific person, brand, logo, or unique object identity.
+- Do NOT write a full scene recreation prompt.
+- Neutral plain English only.`;
+
 /**
  * Call Nano Banana (Gemini image model) with an input image + text prompt.
  * @param {{ imageDataUrl: string, prompt: string, apiKey: string }} args
@@ -217,6 +230,7 @@ module.exports = {
   MODEL_ID,
   TEXT_MODEL_ID,
   DESCRIBE_PROMPT_INSTRUCTION,
+  DESCRIBE_STYLE_INSTRUCTION,
   editWithNanoBanana,
   describeImagePrompt,
   generateTextWithGemini,

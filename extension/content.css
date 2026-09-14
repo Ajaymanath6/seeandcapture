@@ -2318,6 +2318,130 @@
   pointer-events: auto;
 }
 
+.sc-style-card {
+  position: absolute;
+  z-index: 4;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  max-width: min(420px, 92%);
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.sc-style-card.is-hidden {
+  display: none;
+}
+
+.sc-style-card-inner {
+  appearance: none;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(24, 24, 27, 0.92);
+  color: #f8fafc;
+  border-radius: 14px;
+  overflow: hidden;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 88px 1fr;
+  min-height: 88px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  transition:
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    grid-template-columns 0.28s ease,
+    min-height 0.28s ease;
+}
+
+.sc-style-card.is-expanded .sc-style-card-inner {
+  grid-template-columns: 1fr;
+  min-height: 220px;
+}
+
+.sc-style-card-img {
+  width: 100%;
+  height: 88px;
+  object-fit: cover;
+  background: #111;
+  display: block;
+}
+
+.sc-style-card.is-expanded .sc-style-card-img {
+  height: 160px;
+}
+
+.sc-style-card-body {
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sc-style-card-title {
+  font-size: 14px;
+  font-weight: 650;
+  color: #f8fafc;
+  line-height: 1.3;
+}
+
+.sc-style-card-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.sc-style-card-tag {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(248, 250, 252, 0.82);
+}
+
+.sc-style-card-desc {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgba(226, 232, 240, 0.78);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.sc-style-card.is-expanded .sc-style-card-desc {
+  -webkit-line-clamp: unset;
+  display: block;
+  max-height: 180px;
+  overflow: auto;
+  font-size: 12px;
+}
+
+.sc-style-card-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.sc-style-card-copy {
+  min-width: auto;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+.sc-moodboard-get-style {
+  width: 100%;
+}
+
+.sc-moodboard-get-style:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
 .sc-moodboard-side-board,
 .sc-moodboard-side-detail {
   display: flex;

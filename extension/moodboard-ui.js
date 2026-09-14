@@ -171,6 +171,7 @@
       extractColors,
       requestVariation,
       requestRemoveBg,
+      requestGetStyle,
       buildShipPack,
       downloadShipPack,
       showToast,
@@ -196,6 +197,9 @@
     let pendingVariationUrl = null;
     let selectedDetailHex = null;
     let detailBusy = false;
+    let styleBusy = false;
+    let styleExpanded = false;
+    let stylePayload = null;
     let pointerDownOnTile = null;
     let selectMode = false;
     const selectedImageIds = new Set();
@@ -270,6 +274,41 @@
     });
     detailStage.appendChild(detailBlur);
     detailStage.appendChild(detailHeroWrap);
+
+    const styleCard = document.createElement("div");
+    styleCard.className = "sc-style-card is-hidden";
+    styleCard.setAttribute("role", "region");
+    styleCard.setAttribute("aria-label", "Extracted visual style");
+    const styleCardInner = document.createElement("button");
+    styleCardInner.type = "button";
+    styleCardInner.className = "sc-style-card-inner";
+    styleCardInner.setAttribute("aria-expanded", "false");
+    const styleCardImg = document.createElement("img");
+    styleCardImg.className = "sc-style-card-img";
+    styleCardImg.alt = "";
+    const styleCardBody = document.createElement("div");
+    styleCardBody.className = "sc-style-card-body";
+    const styleCardTitle = document.createElement("div");
+    styleCardTitle.className = "sc-style-card-title";
+    const styleCardTags = document.createElement("div");
+    styleCardTags.className = "sc-style-card-tags";
+    const styleCardDesc = document.createElement("p");
+    styleCardDesc.className = "sc-style-card-desc";
+    styleCardBody.appendChild(styleCardTitle);
+    styleCardBody.appendChild(styleCardTags);
+    styleCardBody.appendChild(styleCardDesc);
+    styleCardInner.appendChild(styleCardImg);
+    styleCardInner.appendChild(styleCardBody);
+    const styleCardActions = document.createElement("div");
+    styleCardActions.className = "sc-style-card-actions";
+    const styleCopyBtn = document.createElement("button");
+    styleCopyBtn.type = "button";
+    styleCopyBtn.className = "sc-preview-btn sc-style-card-copy";
+    styleCopyBtn.textContent = "Copy style";
+    styleCardActions.appendChild(styleCopyBtn);
+    styleCard.appendChild(styleCardInner);
+    styleCard.appendChild(styleCardActions);
+    detailStage.appendChild(styleCard);
     stage.appendChild(detailStage);
 
     const side = document.createElement("aside");
@@ -507,6 +546,14 @@
     variationBtn.textContent = "+ Generate variation";
     variationBtn.disabled = true;
 
+    const getStyleBtn = document.createElement("button");
+    getStyleBtn.type = "button";
+    getStyleBtn.className = "sc-moodboard-export sc-moodboard-get-style";
+    getStyleBtn.textContent = "Get style";
+    getStyleBtn.title =
+      "Extract reusable visual style (texture, lighting, art direction)—not a remake prompt";
+    getStyleBtn.disabled = typeof requestGetStyle !== "function";
+
     const variationActions = document.createElement("div");
     variationActions.className =
       "sc-moodboard-variation-actions is-hidden";
@@ -557,6 +604,7 @@
     detailSide.appendChild(colorsLabel);
     detailSide.appendChild(colorsRow);
     detailSide.appendChild(variationBtn);
+    detailSide.appendChild(getStyleBtn);
     detailSide.appendChild(variationActions);
     detailSide.appendChild(detailShipPackBtn);
     detailSide.appendChild(detailHint);
@@ -1111,6 +1159,54 @@
       syncVariationActions();
     }
 
+    function formatStyleCopyText(payload) {
+      if (!payload) return "";
+      const tags = Array.isArray(payload.tags) ? payload.tags.join(", ") : "";
+      return [
+        payload.title || "Style",
+        tags ? `Tags: ${tags}` : "",
+        payload.description || "",
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+    }
+
+    function renderStyleCard(payload, imageUrl) {
+      stylePayload = payload || null;
+      if (!payload) {
+        styleCard.classList.add("is-hidden");
+        styleCard.classList.remove("is-expanded");
+        styleExpanded = false;
+        styleCardInner.setAttribute("aria-expanded", "false");
+        return;
+      }
+      styleCardImg.src = imageUrl || detailHero.src || "";
+      styleCardTitle.textContent = payload.title || "Style";
+      styleCardTags.innerHTML = "";
+      (payload.tags || []).forEach((tag) => {
+        const chip = document.createElement("span");
+        chip.className = "sc-style-card-tag";
+        chip.textContent = tag;
+        styleCardTags.appendChild(chip);
+      });
+      styleCardDesc.textContent = payload.description || "";
+      styleCard.classList.remove("is-hidden");
+      styleCard.classList.toggle("is-expanded", styleExpanded);
+      styleCardInner.setAttribute(
+        "aria-expanded",
+        styleExpanded ? "true" : "false"
+      );
+    }
+
+    function clearStyleCard() {
+      stylePayload = null;
+      styleExpanded = false;
+      styleBusy = false;
+      getStyleBtn.disabled = typeof requestGetStyle !== "function";
+      getStyleBtn.textContent = "Get style";
+      renderStyleCard(null);
+    }
+
     function renderDetailColors(hexes) {
       colorsRow.innerHTML = "";
       const list = Array.isArray(hexes) ? hexes : [];
@@ -1150,6 +1246,7 @@
       detailSourceImage = { ...img };
       pendingVariationUrl = null;
       selectedDetailHex = null;
+      clearStyleCard();
       applyDetailPreview(img.dataUrl);
       canvas.classList.add("is-hidden");
       previewActions.classList.add("is-hidden");
@@ -1185,6 +1282,7 @@
       pendingVariationUrl = null;
       selectedDetailHex = null;
       detailBusy = false;
+      clearStyleCard();
       detailHero.removeAttribute("src");
       detailThumb.removeAttribute("src");
       detailBlur.style.backgroundImage = "";
@@ -1438,6 +1536,64 @@
         alert(err?.message || "Could not generate variation.");
       } finally {
         setDetailBusy(false);
+      }
+    });
+
+    getStyleBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (detailBusy || styleBusy) return;
+      if (typeof requestGetStyle !== "function") {
+        alert("Get style is unavailable in this view.");
+        return;
+      }
+      const sourceUrl =
+        pendingVariationUrl ||
+        detailHero.src ||
+        detailSourceImage?.dataUrl ||
+        detailImage?.dataUrl;
+      if (!sourceUrl) return;
+      styleBusy = true;
+      getStyleBtn.disabled = true;
+      getStyleBtn.textContent = "Reading style…";
+      try {
+        const data = await requestGetStyle(sourceUrl);
+        styleExpanded = false;
+        renderStyleCard(data, sourceUrl);
+        notifyToast(data.title || "Style ready", "Tap the card to expand · Copy style");
+      } catch (err) {
+        console.error(err);
+        alert(err?.message || "Could not extract style");
+      } finally {
+        styleBusy = false;
+        getStyleBtn.disabled = typeof requestGetStyle !== "function";
+        getStyleBtn.textContent = "Get style";
+      }
+    });
+
+    styleCardInner.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (!stylePayload) return;
+      styleExpanded = !styleExpanded;
+      styleCard.classList.toggle("is-expanded", styleExpanded);
+      styleCardInner.setAttribute(
+        "aria-expanded",
+        styleExpanded ? "true" : "false"
+      );
+    });
+
+    styleCopyBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const text = formatStyleCopyText(stylePayload);
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+        styleCopyBtn.textContent = "Copied";
+        notifyToast("Style copied", stylePayload?.title || "");
+        setTimeout(() => {
+          styleCopyBtn.textContent = "Copy style";
+        }, 1200);
+      } catch (_err) {
+        alert("Could not copy automatically — select the text manually.");
       }
     });
 

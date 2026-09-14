@@ -6,7 +6,7 @@ const dotenv = require("dotenv");
 dotenv.config({ path: path.join(__dirname, ".env") });
 
 const { getPreset, listPresetMeta, listIconMixerStyles } = require("./prompts");
-const { editWithNanoBanana, describeImagePrompt, generateTextWithGemini, DESCRIBE_PROMPT_INSTRUCTION } = require("./providers/gemini");
+const { editWithNanoBanana, describeImagePrompt, generateTextWithGemini, DESCRIBE_PROMPT_INSTRUCTION, DESCRIBE_STYLE_INSTRUCTION } = require("./providers/gemini");
 const { editWithFal } = require("./providers/fal");
 const { editWithFluxApi } = require("./providers/fluxapi");
 const {
@@ -30,7 +30,7 @@ const {
 } = require("./providers/rembg");
 const { editLocally } = require("./providers/localEdit");
 const { downscaleImageDataUrl } = require("./lib/downscaleImage");
-const { assertPromptQuality } = require("./lib/promptQuality");
+const { assertPromptQuality, parseStylePayload } = require("./lib/promptQuality");
 const {
   DETECT_TEXT_INSTRUCTION,
   parseDetectTextResponse,
@@ -435,6 +435,99 @@ app.post("/api/get-prompt", async (req, res) => {
     console.error("POST /api/get-prompt failed:", err);
     res.status(502).json({
       error: err?.message || "Could not generate prompt",
+    });
+  }
+});
+
+app.post("/api/get-style", async (req, res) => {
+  try {
+    const { imageDataUrl } = req.body || {};
+    if (!imageDataUrl || typeof imageDataUrl !== "string") {
+      res.status(400).json({ error: "imageDataUrl is required" });
+      return;
+    }
+    if (!hasGoogleKey() && !hasOpenRouterKey() && !hasEdenKey()) {
+      res.status(500).json({
+        error:
+          "No vision provider configured. Set GOOGLE_API_KEY, OPENROUTER_API_KEY (free), or EDEN_AI_API_KEY in server/.env, then restart.",
+      });
+      return;
+    }
+
+    const scaled = downscaleImageDataUrl(imageDataUrl);
+    console.log(
+      `[get-style] imageBytes≈${imageDataUrl.length} scaledBytes≈${scaled.length}`
+    );
+
+    const errors = [];
+
+    async function tryProvider(label, modelId, runner) {
+      try {
+        const raw = await runner();
+        const text = typeof raw === "string" ? raw : raw?.prompt;
+        const usedModel =
+          typeof raw === "object" && raw?.model ? raw.model : modelId;
+        const parsed = parseStylePayload(text);
+        if (!parsed.ok) {
+          throw new Error(parsed.reason);
+        }
+        console.log(`[get-style] ok via ${label} (${usedModel})`);
+        res.json({
+          title: parsed.title,
+          tags: parsed.tags,
+          description: parsed.description,
+          model: usedModel,
+        });
+        return true;
+      } catch (err) {
+        console.warn(`[get-style] ${label} failed:`, err?.message || err);
+        errors.push(`${label}: ${err?.message || String(err)}`);
+        return false;
+      }
+    }
+
+    if (hasGoogleKey()) {
+      const ok = await tryProvider("Gemini", "gemini-2.5-flash", () =>
+        describeImagePrompt({
+          imageDataUrl: scaled,
+          apiKey: process.env.GOOGLE_API_KEY,
+          instruction: DESCRIBE_STYLE_INSTRUCTION,
+        })
+      );
+      if (ok) return;
+    }
+
+    if (hasOpenRouterKey()) {
+      const ok = await tryProvider("OpenRouter", "openrouter", () =>
+        describeImagePromptWithOpenRouter({
+          imageDataUrl: scaled,
+          apiKey: process.env.OPENROUTER_API_KEY,
+          instruction: DESCRIBE_STYLE_INSTRUCTION,
+        })
+      );
+      if (ok) return;
+    }
+
+    if (hasEdenKey()) {
+      const ok = await tryProvider("Eden", "eden-vision", () =>
+        describeImagePromptWithEden({
+          imageDataUrl: scaled,
+          apiKey: process.env.EDEN_AI_API_KEY,
+          instruction: DESCRIBE_STYLE_INSTRUCTION,
+        })
+      );
+      if (ok) return;
+    }
+
+    res.status(502).json({
+      error:
+        errors.join(" | ") ||
+        "Could not extract a usable style. Check GOOGLE_API_KEY or add a free OPENROUTER_API_KEY.",
+    });
+  } catch (err) {
+    console.error("POST /api/get-style failed:", err);
+    res.status(502).json({
+      error: err?.message || "Could not extract style",
     });
   }
 });

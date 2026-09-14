@@ -3823,6 +3823,7 @@
         },
         buildShipPack,
         downloadShipPack,
+        requestGetStyle,
         requestVariation: async ({ imageDataUrl, hex }) => {
           const color = String(hex || "").trim();
           try {
@@ -4682,6 +4683,33 @@
       );
     }
     return { prompt: data.prompt, model: data.model || null };
+  }
+
+  async function requestGetStyle(imageDataUrl) {
+    let response;
+    try {
+      response = await fetch("http://127.0.0.1:8787/api/get-style", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageDataUrl }),
+      });
+    } catch (_err) {
+      throw new Error(
+        "Could not reach local server on port 8787. Start it and try again."
+      );
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.description) {
+      throw new Error(
+        data.error || `Get style failed (${response.status})`
+      );
+    }
+    return {
+      title: data.title || "Style",
+      tags: Array.isArray(data.tags) ? data.tags : [],
+      description: data.description,
+      model: data.model || null,
+    };
   }
 
   async function requestMashupHybrid({
