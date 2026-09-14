@@ -82,3 +82,7 @@ The Figma toolbar is **not** shown under the small right pane in the main modal.
 
 - `extension/` — MV3 plain JS (capture, modal, assets, blend, preview-edit)
 - `server/` — Express + Eden / fal / Gemini / local providers
+
+## Publish to the Chrome Web Store
+
+Step-by-step (policies, privacy, zip, review): see **[CHROME_EXTENSION_PUBLISH.md](CHROME_EXTENSION_PUBLISH.md)**.

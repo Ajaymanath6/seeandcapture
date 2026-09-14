@@ -2210,7 +2210,10 @@
 .sc-moodboard-detail.is-hidden,
 .sc-moodboard-side-board.is-hidden,
 .sc-moodboard-side-detail.is-hidden,
-.sc-moodboard-variation-actions.is-hidden {
+.sc-moodboard-variation-actions.is-hidden,
+.sc-moodboard-batch-cutout-actions.is-hidden,
+.sc-moodboard-rembg-batch.is-hidden,
+.sc-moodboard-ship-pack.is-hidden {
   display: none;
 }
 
@@ -2402,6 +2405,27 @@
 }
 
 .sc-moodboard-variation-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.sc-moodboard-batch-cutout-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.sc-moodboard-batch-cutout-actions .sc-moodboard-generate,
+.sc-moodboard-batch-cutout-actions .sc-moodboard-export,
+.sc-moodboard-rembg-batch,
+.sc-moodboard-ship-pack {
+  width: 100%;
+}
+
+.sc-moodboard-batch-cutout-actions button:disabled,
+.sc-moodboard-rembg-batch:disabled,
+.sc-moodboard-ship-pack:disabled {
   opacity: 0.55;
   cursor: default;
 }

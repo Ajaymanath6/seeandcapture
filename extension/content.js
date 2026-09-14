@@ -2958,6 +2958,7 @@
       { value: "original", label: "Original" },
       { value: "16:9", label: "Landscape 16:9" },
       { value: "16:10", label: "Desktop 16:10" },
+      { value: "4:5", label: "Portrait 4:5" },
       { value: "1:1", label: "Square 1:1" },
       { value: "9:16", label: "Portrait 9:16" },
     ];
@@ -3813,6 +3814,15 @@
           }),
         extractColors: (dataUrl) => extractTopColors(dataUrl, 5),
         showToast: (title, sub) => showAppToast(title, sub),
+        requestRemoveBg: async (imageDataUrl) => {
+          const data = await requestEdit("remove-bg", {
+            imageDataUrl,
+            preferDirect: true,
+          });
+          return data?.imageDataUrl || data;
+        },
+        buildShipPack,
+        downloadShipPack,
         requestVariation: async ({ imageDataUrl, hex }) => {
           const color = String(hex || "").trim();
           try {
@@ -3873,34 +3883,7 @@
     }
 
     try {
-      const blob = await dataUrlToBlob(dataUrl);
-      const fileName = `see-and-capture-${Date.now()}.png`;
-
-      if (typeof window.showSaveFilePicker === "function") {
-        const handle = await window.showSaveFilePicker({
-          suggestedName: fileName,
-          types: [
-            {
-              description: "PNG image",
-              accept: { "image/png": [".png"] },
-            },
-          ],
-        });
-        const writable = await handle.createWritable();
-        await writable.write(blob);
-        await writable.close();
-      } else if (typeof window.showDirectoryPicker === "function") {
-        const dir = await window.showDirectoryPicker({ mode: "readwrite" });
-        const fileHandle = await dir.getFileHandle(fileName, { create: true });
-        const writable = await fileHandle.createWritable();
-        await writable.write(blob);
-        await writable.close();
-      } else {
-        const link = document.createElement("a");
-        link.href = dataUrl;
-        link.download = fileName;
-        link.click();
-      }
+      await downloadDataUrl(dataUrl, `see-and-capture-${Date.now()}.png`);
     } catch (err) {
       if (err && err.name === "AbortError") {
         // cancelled
@@ -3912,6 +3895,108 @@
       if (button && previous != null) {
         button.disabled = false;
         button.innerHTML = previous;
+      }
+    }
+  }
+
+  async function downloadDataUrl(dataUrl, fileName) {
+    const name = String(fileName || `see-and-capture-${Date.now()}.png`).replace(
+      /[^\w.\-]+/g,
+      "-"
+    );
+    if (typeof window.showSaveFilePicker === "function" && !fileName) {
+      const blob = await dataUrlToBlob(dataUrl);
+      const handle = await window.showSaveFilePicker({
+        suggestedName: name,
+        types: [
+          {
+            description: "PNG image",
+            accept: { "image/png": [".png"] },
+          },
+        ],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = name;
+    document.documentElement.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
+  /**
+   * Contain-fit image onto a transparent canvas of fixed size.
+   * @param {string} dataUrl
+   * @param {{ width: number, height: number }} size
+   * @returns {Promise<string>}
+   */
+  function fitTransparent(dataUrl, size) {
+    const width = Math.max(1, Math.round(Number(size?.width) || 0));
+    const height = Math.max(1, Math.round(Number(size?.height) || 0));
+    if (!width || !height) {
+      return Promise.reject(new Error("Invalid fitTransparent size"));
+    }
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => {
+        try {
+          const srcW = img.naturalWidth || img.width;
+          const srcH = img.naturalHeight || img.height;
+          const scale = Math.min(width / srcW, height / srcH);
+          const dw = Math.max(1, Math.round(srcW * scale));
+          const dh = Math.max(1, Math.round(srcH * scale));
+          const dx = Math.round((width - dw) / 2);
+          const dy = Math.round((height - dh) / 2);
+          const canvas = document.createElement("canvas");
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext("2d");
+          ctx.clearRect(0, 0, width, height);
+          ctx.drawImage(img, dx, dy, dw, dh);
+          resolve(canvas.toDataURL("image/png"));
+        } catch (err) {
+          reject(err);
+        }
+      };
+      img.onerror = () => reject(new Error("Failed to load image"));
+      img.src = dataUrl;
+    });
+  }
+
+  async function buildShipPack(dataUrl, baseName) {
+    const safe =
+      String(baseName || "asset")
+        .trim()
+        .replace(/[^\w.\-]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "asset";
+    const files = [{ filename: `${safe}-cutout.png`, dataUrl }];
+    const specs = [
+      { filename: `${safe}-1x1.png`, width: 1080, height: 1080 },
+      { filename: `${safe}-4x5.png`, width: 1080, height: 1350 },
+      { filename: `${safe}-16x9.png`, width: 1920, height: 1080 },
+      { filename: `${safe}-favicon-32.png`, width: 32, height: 32 },
+      { filename: `${safe}-favicon-128.png`, width: 128, height: 128 },
+    ];
+    for (const spec of specs) {
+      const out = await fitTransparent(dataUrl, spec);
+      files.push({ filename: spec.filename, dataUrl: out });
+    }
+    return files;
+  }
+
+  async function downloadShipPack(files, onProgress) {
+    const list = Array.isArray(files) ? files : [];
+    for (let i = 0; i < list.length; i += 1) {
+      const item = list[i];
+      if (!item?.dataUrl) continue;
+      if (typeof onProgress === "function") onProgress(i + 1, list.length);
+      await downloadDataUrl(item.dataUrl, item.filename);
+      if (i < list.length - 1) {
+        await new Promise((r) => setTimeout(r, 280));
       }
     }
   }

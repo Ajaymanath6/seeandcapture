@@ -170,6 +170,9 @@
       materialIcon,
       extractColors,
       requestVariation,
+      requestRemoveBg,
+      buildShipPack,
+      downloadShipPack,
       showToast,
     } = opts;
 
@@ -196,6 +199,12 @@
     let pointerDownOnTile = null;
     let selectMode = false;
     const selectedImageIds = new Set();
+    /** @type {Map<string, string>} */
+    const pendingCutouts = new Map();
+    let batchBusy = false;
+    /** @type {{ dataUrl: string, baseName: string }[]} */
+    let shipPackQueue = [];
+    const MAX_BATCH_REMBG = 12;
     const PASTE_QUEUE_URL = "http://127.0.0.1:8787/api/paste-queue";
     const PASTE_GAP_MS = 1200;
 
@@ -396,7 +405,10 @@
 
     const selectModeToggle = makeToggle("Select for AI copy", false, (on) => {
       selectMode = on;
-      if (!selectMode) selectedImageIds.clear();
+      if (!selectMode) {
+        selectedImageIds.clear();
+        if (pendingCutouts.size) clearPendingCutouts();
+      }
       applyLayout();
       syncCopyAiUi();
     });
@@ -409,11 +421,55 @@
     copyAiBtn.title =
       "Select images, then copy once. Paste repeatedly (⌘V / Ctrl+V) in any field — each image lands ~1.2s apart.";
 
+    const rembgBatchBtn = document.createElement("button");
+    rembgBatchBtn.type = "button";
+    rembgBatchBtn.className =
+      "sc-moodboard-generate sc-moodboard-rembg-batch is-hidden";
+    rembgBatchBtn.textContent = "Remove BG";
+    rembgBatchBtn.title = "Remove background from selected tiles";
+    rembgBatchBtn.disabled = true;
+
+    const batchCutoutActions = document.createElement("div");
+    batchCutoutActions.className =
+      "sc-moodboard-batch-cutout-actions is-hidden";
+    const replaceAllCutoutsBtn = document.createElement("button");
+    replaceAllCutoutsBtn.type = "button";
+    replaceAllCutoutsBtn.className =
+      "sc-moodboard-export sc-moodboard-batch-replace";
+    replaceAllCutoutsBtn.textContent = "Replace all";
+    replaceAllCutoutsBtn.title = "Overwrite selected tiles with cutouts";
+    const saveAllCutoutsBtn = document.createElement("button");
+    saveAllCutoutsBtn.type = "button";
+    saveAllCutoutsBtn.className =
+      "sc-moodboard-generate sc-moodboard-batch-save";
+    saveAllCutoutsBtn.textContent = "Save all";
+    saveAllCutoutsBtn.title = "Add cutouts as new tiles (keep originals)";
+    const discardAllCutoutsBtn = document.createElement("button");
+    discardAllCutoutsBtn.type = "button";
+    discardAllCutoutsBtn.className =
+      "sc-moodboard-export sc-moodboard-batch-discard";
+    discardAllCutoutsBtn.textContent = "Discard";
+    discardAllCutoutsBtn.title = "Discard pending cutouts";
+    batchCutoutActions.appendChild(replaceAllCutoutsBtn);
+    batchCutoutActions.appendChild(saveAllCutoutsBtn);
+    batchCutoutActions.appendChild(discardAllCutoutsBtn);
+
+    const boardShipPackBtn = document.createElement("button");
+    boardShipPackBtn.type = "button";
+    boardShipPackBtn.className =
+      "sc-moodboard-export sc-moodboard-ship-pack is-hidden";
+    boardShipPackBtn.textContent = "Ship pack";
+    boardShipPackBtn.title =
+      "Download transparent PNG + 1:1 / 4:5 / 16:9 / favicon sizes";
+
     boardSide.appendChild(sideHead);
     boardSide.appendChild(generateBtn);
     boardSide.appendChild(exportBtn);
     boardSide.appendChild(selectModeToggle.row);
     boardSide.appendChild(copyAiBtn);
+    boardSide.appendChild(rembgBatchBtn);
+    boardSide.appendChild(batchCutoutActions);
+    boardSide.appendChild(boardShipPackBtn);
     boardSide.appendChild(gutterSlider);
     boardSide.appendChild(radiusSlider);
     boardSide.appendChild(receiveToggle.row);
@@ -476,6 +532,14 @@
     variationActions.appendChild(replaceVariationBtn);
     variationActions.appendChild(discardVariationBtn);
 
+    const detailShipPackBtn = document.createElement("button");
+    detailShipPackBtn.type = "button";
+    detailShipPackBtn.className =
+      "sc-moodboard-export sc-moodboard-ship-pack is-hidden";
+    detailShipPackBtn.textContent = "Ship pack";
+    detailShipPackBtn.title =
+      "Download transparent PNG + 1:1 / 4:5 / 16:9 / favicon sizes";
+
     const detailBackBtn = document.createElement("button");
     detailBackBtn.type = "button";
     detailBackBtn.className = "sc-moodboard-export sc-moodboard-detail-back";
@@ -491,6 +555,7 @@
     detailSide.appendChild(colorsRow);
     detailSide.appendChild(variationBtn);
     detailSide.appendChild(variationActions);
+    detailSide.appendChild(detailShipPackBtn);
     detailSide.appendChild(detailHint);
     detailSide.appendChild(detailBackBtn);
 
@@ -554,7 +619,7 @@
 
     function syncCopyAiUi() {
       const n = selectedImageIds.size;
-      copyAiBtn.disabled = !selectMode || n < 1;
+      copyAiBtn.disabled = !selectMode || n < 1 || batchBusy;
       copyAiBtn.textContent =
         n > 0
           ? `Copy ${n} for AI (Sequential)`
@@ -565,6 +630,216 @@
           : "Select for AI copy"
         : "Select for AI copy";
       grid.classList.toggle("is-select-mode", selectMode);
+      syncBatchCutoutUi();
+    }
+
+    function syncBatchCutoutUi() {
+      const n = selectedImageIds.size;
+      const hasPending = pendingCutouts.size > 0;
+      const showRembg =
+        selectMode && n > 0 && typeof requestRemoveBg === "function";
+      rembgBatchBtn.classList.toggle("is-hidden", !showRembg && !batchBusy);
+      rembgBatchBtn.disabled = batchBusy || !showRembg;
+      if (batchBusy) {
+        rembgBatchBtn.textContent = rembgBatchBtn.dataset.progress || "Removing…";
+      } else {
+        rembgBatchBtn.textContent =
+          n > 0 ? `Remove BG (${Math.min(n, MAX_BATCH_REMBG)})` : "Remove BG";
+      }
+      batchCutoutActions.classList.toggle("is-hidden", !hasPending);
+      replaceAllCutoutsBtn.disabled = batchBusy || !hasPending;
+      saveAllCutoutsBtn.disabled = batchBusy || !hasPending;
+      discardAllCutoutsBtn.disabled = batchBusy || !hasPending;
+      if (hasPending) {
+        replaceAllCutoutsBtn.textContent = `Replace all (${pendingCutouts.size})`;
+        saveAllCutoutsBtn.textContent = `Save all (${pendingCutouts.size})`;
+        hint.textContent =
+          "Cutouts ready · Replace overwrites tiles · Save adds new ones";
+      }
+      syncShipPackUi();
+    }
+
+    function syncShipPackUi() {
+      const n = shipPackQueue.length;
+      const canShip =
+        n > 0 &&
+        typeof buildShipPack === "function" &&
+        typeof downloadShipPack === "function";
+      boardShipPackBtn.classList.toggle("is-hidden", !canShip);
+      detailShipPackBtn.classList.toggle("is-hidden", !canShip);
+      boardShipPackBtn.disabled = batchBusy || detailBusy || !canShip;
+      detailShipPackBtn.disabled = batchBusy || detailBusy || !canShip;
+      const label =
+        n > 1 ? `Ship pack (${n})` : "Ship pack";
+      boardShipPackBtn.textContent = label;
+      detailShipPackBtn.textContent = label;
+    }
+
+    function queueShipPack(dataUrl, baseName) {
+      if (!dataUrl) return;
+      shipPackQueue = [
+        {
+          dataUrl,
+          baseName: String(baseName || "asset").slice(0, 40),
+        },
+      ];
+      syncShipPackUi();
+    }
+
+    function queueShipPackMany(items) {
+      shipPackQueue = (Array.isArray(items) ? items : []).filter(
+        (item) => item && item.dataUrl
+      );
+      syncShipPackUi();
+    }
+
+    function clearPendingCutouts() {
+      pendingCutouts.clear();
+      syncBatchCutoutUi();
+    }
+
+    async function runBatchRemoveBg() {
+      if (batchBusy || !selectMode) return;
+      if (typeof requestRemoveBg !== "function") {
+        alert("Remove BG is unavailable in this view.");
+        return;
+      }
+      const images = (current.images || []).filter((img) =>
+        selectedImageIds.has(img.id)
+      );
+      if (!images.length) return;
+      if (images.length > MAX_BATCH_REMBG) {
+        notifyToast(
+          `Max ${MAX_BATCH_REMBG} at once`,
+          `Using first ${MAX_BATCH_REMBG} selected`
+        );
+      }
+      const slice = images.slice(0, MAX_BATCH_REMBG);
+      batchBusy = true;
+      pendingCutouts.clear();
+      syncBatchCutoutUi();
+      const errors = [];
+      try {
+        for (let i = 0; i < slice.length; i += 1) {
+          const img = slice[i];
+          rembgBatchBtn.dataset.progress = `Removing ${i + 1}/${slice.length}…`;
+          syncBatchCutoutUi();
+          try {
+            const result = await requestRemoveBg(img.dataUrl);
+            const url =
+              typeof result === "string"
+                ? result
+                : result?.imageDataUrl || null;
+            if (!url) throw new Error("No image returned");
+            pendingCutouts.set(img.id, url);
+          } catch (err) {
+            errors.push(
+              `${img.id}: ${err?.message || String(err)}`
+            );
+          }
+        }
+        if (!pendingCutouts.size) {
+          throw new Error(
+            errors[0] || "Remove BG failed for all selected images"
+          );
+        }
+        notifyToast(
+          `${pendingCutouts.size} cutout(s) ready`,
+          errors.length
+            ? `${errors.length} failed · Replace or Save all`
+            : "Replace or Save all"
+        );
+      } catch (err) {
+        console.error(err);
+        notifyToast("Remove BG failed", err?.message || "Try again");
+        alert(err?.message || "Could not remove backgrounds");
+      } finally {
+        batchBusy = false;
+        delete rembgBatchBtn.dataset.progress;
+        syncBatchCutoutUi();
+      }
+    }
+
+    async function commitBatchCutouts(mode) {
+      if (batchBusy || !pendingCutouts.size || !current?.id) return;
+      batchBusy = true;
+      syncBatchCutoutUi();
+      const entries = [...pendingCutouts.entries()];
+      const shipped = [];
+      try {
+        for (let i = 0; i < entries.length; i += 1) {
+          const [imageId, dataUrl] = entries[i];
+          if (mode === "replace") {
+            current = await window.SeeCaptureMoodboards.updateImage(
+              current.id,
+              imageId,
+              dataUrl
+            );
+            shipped.push({ dataUrl, baseName: `cutout-${i + 1}` });
+          } else {
+            current = await window.SeeCaptureMoodboards.addImage(
+              current.id,
+              dataUrl
+            );
+            shipped.push({ dataUrl, baseName: `cutout-${i + 1}` });
+          }
+        }
+        onBoardUpdated?.(current);
+        clearPendingCutouts();
+        selectedImageIds.clear();
+        queueShipPackMany(shipped);
+        applyLayout();
+        notifyToast(
+          mode === "replace" ? "Replaced on board" : "Saved to board",
+          "Ship pack ready"
+        );
+      } catch (err) {
+        console.error(err);
+        alert(err?.message || "Could not commit cutouts");
+      } finally {
+        batchBusy = false;
+        syncBatchCutoutUi();
+      }
+    }
+
+    async function runShipPackDownloads() {
+      if (
+        !shipPackQueue.length ||
+        typeof buildShipPack !== "function" ||
+        typeof downloadShipPack !== "function"
+      ) {
+        return;
+      }
+      const queue = [...shipPackQueue];
+      boardShipPackBtn.disabled = true;
+      detailShipPackBtn.disabled = true;
+      try {
+        for (let i = 0; i < queue.length; i += 1) {
+          const item = queue[i];
+          const label =
+            queue.length > 1
+              ? `Pack ${i + 1}/${queue.length}`
+              : "Building pack…";
+          boardShipPackBtn.textContent = label;
+          detailShipPackBtn.textContent = label;
+          notifyToast(label, item.baseName || "asset");
+          const files = await buildShipPack(
+            item.dataUrl,
+            item.baseName || `asset-${i + 1}`
+          );
+          await downloadShipPack(files, (done, total) => {
+            const t = `Download ${done}/${total}`;
+            boardShipPackBtn.textContent = t;
+            detailShipPackBtn.textContent = t;
+          });
+        }
+        notifyToast("Ship pack done", `${queue.length} asset(s)`);
+      } catch (err) {
+        console.error(err);
+        alert(err?.message || "Could not download ship pack");
+      } finally {
+        syncShipPackUi();
+      }
     }
 
     function notifyToast(title, sub) {
@@ -876,6 +1151,7 @@
       colorsRow.textContent = "Extracting colors…";
       variationBtn.disabled = true;
       syncVariationActions();
+      syncShipPackUi();
       try {
         const hexes = extractColors
           ? await extractColors(img.dataUrl)
@@ -1164,6 +1440,7 @@
       if (detailBusy || !pendingVariationUrl || !current?.id) return;
       setDetailBusy(true);
       try {
+        const savedUrl = pendingVariationUrl;
         current = await window.SeeCaptureMoodboards.addImage(
           current.id,
           pendingVariationUrl
@@ -1172,10 +1449,12 @@
         const images = current.images || [];
         const newest = images[images.length - 1];
         clearPendingVariation();
+        queueShipPack(savedUrl, "variation");
         applyLayout();
         if (newest) {
           await openImageDetail(newest);
         }
+        syncShipPackUi();
       } catch (err) {
         console.error(err);
         alert(err?.message || "Could not save variation");
@@ -1196,6 +1475,7 @@
       }
       setDetailBusy(true);
       try {
+        const savedUrl = pendingVariationUrl;
         current = await window.SeeCaptureMoodboards.updateImage(
           current.id,
           detailImage.id,
@@ -1206,10 +1486,12 @@
           (img) => img && img.id === detailImage.id
         );
         clearPendingVariation();
+        queueShipPack(savedUrl, "variation");
         applyLayout();
         if (updated) {
           await openImageDetail(updated);
         }
+        syncShipPackUi();
       } catch (err) {
         console.error(err);
         alert(err?.message || "Could not replace image");
@@ -1242,6 +1524,33 @@
     copyAiBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       copySelectedForAiSequential();
+    });
+    rembgBatchBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      runBatchRemoveBg();
+    });
+    replaceAllCutoutsBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      commitBatchCutouts("replace");
+    });
+    saveAllCutoutsBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      commitBatchCutouts("save");
+    });
+    discardAllCutoutsBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (batchBusy) return;
+      clearPendingCutouts();
+      notifyToast("Discarded", "Cutouts cleared");
+      applyLayout();
+    });
+    boardShipPackBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      runShipPackDownloads();
+    });
+    detailShipPackBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      runShipPackDownloads();
     });
     generateBtn.addEventListener("click", (e) => {
       e.stopPropagation();
