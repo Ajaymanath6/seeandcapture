@@ -528,9 +528,17 @@
       "sc-moodboard-export sc-moodboard-variation-discard";
     discardVariationBtn.textContent = "Discard";
     discardVariationBtn.title = "Discard this variation preview";
+    const removeBgVariationBtn = document.createElement("button");
+    removeBgVariationBtn.type = "button";
+    removeBgVariationBtn.className =
+      "sc-moodboard-export sc-moodboard-variation-rembg";
+    removeBgVariationBtn.textContent = "Remove BG";
+    removeBgVariationBtn.title =
+      "Remove background from this variation, then Save or Replace";
     variationActions.appendChild(saveVariationBtn);
     variationActions.appendChild(replaceVariationBtn);
     variationActions.appendChild(discardVariationBtn);
+    variationActions.appendChild(removeBgVariationBtn);
 
     const detailShipPackBtn = document.createElement("button");
     detailShipPackBtn.type = "button";
@@ -539,11 +547,6 @@
     detailShipPackBtn.textContent = "Ship pack";
     detailShipPackBtn.title =
       "Download transparent PNG + 1:1 / 4:5 / 16:9 / favicon sizes";
-
-    const detailBackBtn = document.createElement("button");
-    detailBackBtn.type = "button";
-    detailBackBtn.className = "sc-moodboard-export sc-moodboard-detail-back";
-    detailBackBtn.textContent = "Back to board";
 
     const detailHint = document.createElement("p");
     detailHint.className = "sc-moodboard-hint";
@@ -557,7 +560,6 @@
     detailSide.appendChild(variationActions);
     detailSide.appendChild(detailShipPackBtn);
     detailSide.appendChild(detailHint);
-    detailSide.appendChild(detailBackBtn);
 
     side.appendChild(boardSide);
     side.appendChild(detailSide);
@@ -1067,6 +1069,10 @@
       saveVariationBtn.disabled = detailBusy || !pendingVariationUrl;
       replaceVariationBtn.disabled = detailBusy || !pendingVariationUrl;
       discardVariationBtn.disabled = detailBusy || !pendingVariationUrl;
+      removeBgVariationBtn.disabled =
+        detailBusy ||
+        !pendingVariationUrl ||
+        typeof requestRemoveBg !== "function";
       colorsRow
         .querySelectorAll(".sc-mb-color-dot")
         .forEach((el) => {
@@ -1080,9 +1086,13 @@
       saveVariationBtn.disabled = detailBusy || !hasPending;
       replaceVariationBtn.disabled = detailBusy || !hasPending;
       discardVariationBtn.disabled = detailBusy || !hasPending;
+      removeBgVariationBtn.disabled =
+        detailBusy ||
+        !hasPending ||
+        typeof requestRemoveBg !== "function";
       if (hasPending) {
         detailHint.textContent =
-          "Save adds to the board. Replace overwrites this image. Discard reverts.";
+          "Save / Replace / Discard · Remove BG strips the backdrop, then Save or Replace.";
       } else if (selectedDetailHex) {
         detailHint.textContent =
           "Variation keeps layout and shifts the color theme.";
@@ -1377,10 +1387,6 @@
         close();
       });
     }
-    detailBackBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      closeImageDetail();
-    });
     detailDeleteBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
       e.preventDefault();
@@ -1518,6 +1524,42 @@
           .catch(() => {});
       } else {
         syncVariationActions();
+      }
+    });
+
+    removeBgVariationBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (detailBusy || !pendingVariationUrl) return;
+      if (typeof requestRemoveBg !== "function") {
+        alert("Remove BG is unavailable in this view.");
+        return;
+      }
+      setDetailBusy(true);
+      removeBgVariationBtn.textContent = "Removing…";
+      try {
+        const result = await requestRemoveBg(pendingVariationUrl);
+        const nextUrl =
+          typeof result === "string"
+            ? result
+            : result?.imageDataUrl || null;
+        if (!nextUrl) throw new Error("No image returned.");
+        pendingVariationUrl = nextUrl;
+        applyDetailPreview(nextUrl);
+        syncVariationActions();
+        try {
+          const hexes = extractColors ? await extractColors(nextUrl) : [];
+          renderDetailColors(hexes);
+        } catch (_err) {
+          /* keep prior palette */
+        }
+        syncVariationActions();
+        notifyToast("Background removed", "Save or Replace when ready");
+      } catch (err) {
+        console.error(err);
+        alert(err?.message || "Could not remove background");
+      } finally {
+        removeBgVariationBtn.textContent = "Remove BG";
+        setDetailBusy(false);
       }
     });
 
