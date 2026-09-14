@@ -55,6 +55,10 @@
     return call("MOODBOARD_REMOVE_IMAGE", { boardId, imageId });
   }
 
+  async function updateImage(boardId, imageId, dataUrl) {
+    return call("MOODBOARD_UPDATE_IMAGE", { boardId, imageId, dataUrl });
+  }
+
   async function updateSettings(boardId, settings) {
     return call("MOODBOARD_UPDATE_SETTINGS", { boardId, settings });
   }
@@ -125,6 +129,7 @@
     createMoodboard,
     addImage,
     removeImage,
+    updateImage,
     updateSettings,
     reorderImages,
     touchOpened,

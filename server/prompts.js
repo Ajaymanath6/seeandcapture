@@ -89,7 +89,72 @@ const PRESETS = {
       "Do not collapse multiple requested limbs/objects into one. " +
       "Do not invent a wholly new scene unless the request requires it. Return one edited image.",
   },
+  "icon-mixer": {
+    id: "icon-mixer",
+    label: "Icon Mixer",
+    mode: "eden-custom-prompt",
+    prompt:
+      "Restyle the attached icon only. Preserve the exact glyph silhouette, proportions, and recognizable symbol. " +
+      "Do not invent a different icon or add extra objects. Return one polished app-icon style render.",
+  },
 };
+
+/** Style templates for Icon Mixer (client picks one; prompt is appended). */
+const ICON_MIXER_STYLES = {
+  glassmorphism: {
+    id: "glassmorphism",
+    label: "Glass",
+    prompt:
+      "Transform this icon into glassmorphism: frosted translucent layers, soft blur, subtle specular highlights, " +
+      "light refraction on edges, clean square app-icon framing, soft gradient or transparent ground. " +
+      "Keep the same symbol silhouette and composition—only change material and finish.",
+  },
+  "3d": {
+    id: "3d",
+    label: "3D",
+    prompt:
+      "Transform this icon into a polished 3D app icon: soft rounded extrusions, gentle studio lighting, " +
+      "subtle ambient occlusion and drop shadow, crisp edges, premium product look. " +
+      "Keep the same symbol silhouette—do not redesign the glyph.",
+  },
+  candy: {
+    id: "candy",
+    label: "Candy",
+    prompt:
+      "Transform this icon into a glossy candy / jelly style: smooth shiny plastic, vibrant playful colors, " +
+      "rounded soft forms, sweet specular highlights, clean square framing. " +
+      "Preserve the exact symbol silhouette and readable shape.",
+  },
+  clay: {
+    id: "clay",
+    label: "Clay",
+    prompt:
+      "Transform this icon into soft 3D clay / plasticine: matte finish, pastel or earthy tones, " +
+      "rounded edges, gentle top light, subtle surface fingerprints optional but keep clean, soft shadow. " +
+      "Keep the same glyph silhouette—only change material to clay.",
+  },
+  neumorph: {
+    id: "neumorph",
+    label: "Neumorph",
+    prompt:
+      "Transform this icon into soft neumorphism: embossed/debossed look on a matching soft panel, " +
+      "subtle dual shadows (light and dark), low contrast, rounded corners, minimal flat-relief style. " +
+      "Preserve the exact symbol silhouette and proportions.",
+  },
+};
+
+function getIconMixerStyle(styleId) {
+  if (!styleId || typeof styleId !== "string") return null;
+  return ICON_MIXER_STYLES[styleId] || null;
+}
+
+function listIconMixerStyles() {
+  return Object.values(ICON_MIXER_STYLES).map(({ id, label, prompt }) => ({
+    id,
+    label,
+    prompt,
+  }));
+}
 
 function getPreset(presetId) {
   if (!presetId || typeof presetId !== "string") return null;
@@ -108,6 +173,9 @@ function listPresetMeta() {
 module.exports = {
   PRESERVE,
   PRESETS,
+  ICON_MIXER_STYLES,
+  getIconMixerStyle,
+  listIconMixerStyles,
   getPreset,
   listPresetMeta,
 };

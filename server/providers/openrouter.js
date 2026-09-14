@@ -1,4 +1,16 @@
 const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
+const OPENROUTER_TRANSCRIBE_URL =
+  "https://openrouter.ai/api/v1/audio/transcriptions";
+
+/** OpenRouter has no free Whisper STT; use active paid transcription models. */
+const DEFAULT_STT_MODELS = [
+  "openai/whisper-large-v3-turbo",
+  "openai/whisper-1",
+  "openai/whisper-large-v3",
+  "qwen/qwen3-asr-0.6b",
+  "openai/gpt-4o-mini-transcribe",
+];
+const DEFAULT_STT_MODEL = DEFAULT_STT_MODELS[0];
 
 /** Prefer models that currently answer vision on the free tier. */
 const DEFAULT_VISION_MODELS = [
@@ -18,6 +30,25 @@ function visionModelList(preferred) {
     .filter(Boolean);
   const ordered = [...fromEnv, ...DEFAULT_VISION_MODELS];
   return [...new Set(ordered)];
+}
+
+function sttModelList(preferred) {
+  const fromEnv = String(
+    preferred || process.env.OPENROUTER_STT_MODEL || ""
+  )
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((id) => !/:free$/i.test(id));
+  const ordered = [...fromEnv, ...DEFAULT_STT_MODELS];
+  return [...new Set(ordered)];
+}
+
+function isRetriableSttError(message) {
+  const msg = String(message || "");
+  return /no endpoints|not found|404|unavailable|model .* not|does not exist|unsupported/i.test(
+    msg
+  );
 }
 
 function formatOpenRouterError(payload, status) {
@@ -130,8 +161,89 @@ async function describeImagePromptWithOpenRouter({
   throw new Error(errors.join(" | ") || "OpenRouter vision failed");
 }
 
+/**
+ * Speech→text via OpenRouter dedicated transcriptions endpoint.
+ * Tries several working STT models until one succeeds.
+ * @param {{ audioBase64: string, format: string, apiKey: string, model?: string }} args
+ * @returns {Promise<{ text: string, model: string }>}
+ */
+async function transcribeAudioWithOpenRouter({
+  audioBase64,
+  format,
+  apiKey,
+  model,
+}) {
+  if (!apiKey) {
+    throw new Error("OPENROUTER_API_KEY is not set");
+  }
+  const data = String(audioBase64 || "").replace(/^data:[^;]+;base64,/, "");
+  if (!data) {
+    throw new Error("audioBase64 is required");
+  }
+  const audioFormat = String(format || "webm")
+    .trim()
+    .toLowerCase()
+    .replace(/^\./, "");
+  if (!audioFormat) {
+    throw new Error("audio format is required");
+  }
+
+  const models = sttModelList(model);
+  const errors = [];
+
+  for (const selectedModel of models) {
+    try {
+      const response = await fetch(OPENROUTER_TRANSCRIBE_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://github.com/seeandcapture",
+          "X-Title": "See and Capture",
+        },
+        body: JSON.stringify({
+          model: selectedModel,
+          input_audio: {
+            data,
+            format: audioFormat,
+          },
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || payload?.error) {
+        throw new Error(
+          formatOpenRouterError(payload, response.status || 502)
+        );
+      }
+
+      const text = String(payload?.text || "").trim();
+      if (!text) {
+        throw new Error("OpenRouter transcription returned empty text");
+      }
+      return { text, model: selectedModel };
+    } catch (err) {
+      const msg = err?.message || String(err);
+      errors.push(`${selectedModel}: ${msg}`);
+      if (!isRetriableSttError(msg) && errors.length === 1 && models.length > 1) {
+        // Still try fallbacks for first-model endpoint failures; stop early only
+        // on auth/billing style errors that will fail identically for all models.
+        if (/api.?key|unauthorized|user not found|insufficient|credits|billing/i.test(msg)) {
+          break;
+        }
+      }
+    }
+  }
+
+  throw new Error(errors.join(" | ") || "OpenRouter transcription failed");
+}
+
 module.exports = {
   OPENROUTER_CHAT_URL,
+  OPENROUTER_TRANSCRIBE_URL,
   DEFAULT_VISION_MODELS,
+  DEFAULT_STT_MODELS,
+  DEFAULT_STT_MODEL,
   describeImagePromptWithOpenRouter,
+  transcribeAudioWithOpenRouter,
 };

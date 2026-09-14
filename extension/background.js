@@ -1,4 +1,4 @@
-importScripts("moodboard-store.js");
+importScripts("moodboard-store.js", "prompt-library-store.js");
 
 const CONTEXT_MENU_ROOT = "see-and-capture-moodboard-root";
 const CONTEXT_MENU_SELECT = "see-and-capture-select";
@@ -9,6 +9,8 @@ const CONTENT_FILES = [
   "presets.js",
   "assets-db.js",
   "moodboard-db.js",
+  "prompt-library-db.js",
+  "prompt-library-ui.js",
   "moodboard-ui.js",
   "blend.js",
   "payload.js",
@@ -16,8 +18,11 @@ const CONTENT_FILES = [
   "content.js",
 ];
 const API_URL = "http://127.0.0.1:8787/api/edit";
+const OFFSCREEN_VOICE_URL = "offscreen-voice.html";
+const MIC_PERMISSION_URL = "mic-permission.html";
 
 const store = self.SeeCaptureMoodboardStore;
+const promptStore = self.SeeCapturePromptLibraryStore;
 
 chrome.runtime.onInstalled.addListener(() => {
   syncReceiversFromStore()
@@ -142,8 +147,287 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  if (message?.type?.startsWith("PROMPT_LIBRARY_")) {
+    handlePromptLibraryMessage(message)
+      .then((result) => sendResponse({ ok: true, result }))
+      .catch((err) =>
+        sendResponse({ ok: false, error: err?.message || String(err) })
+      );
+    return true;
+  }
+
+  if (message?.type === "VOICE_ENSURE_MIC") {
+    ensureMicPermission()
+      .then((result) => sendResponse(result))
+      .catch((err) =>
+        sendResponse({ ok: false, error: err?.message || String(err) })
+      );
+    return true;
+  }
+
+  if (message?.type === "VOICE_START") {
+    startVoiceRecording()
+      .then((result) => sendResponse(result))
+      .catch((err) =>
+        sendResponse({ ok: false, error: err?.message || String(err) })
+      );
+    return true;
+  }
+
+  if (message?.type === "VOICE_STOP") {
+    stopVoiceRecording()
+      .then((result) => sendResponse(result))
+      .catch((err) =>
+        sendResponse({ ok: false, error: err?.message || String(err) })
+      );
+    return true;
+  }
+
+  if (message?.type === "VOICE_CANCEL") {
+    cancelVoiceRecording()
+      .then((result) => sendResponse(result))
+      .catch((err) =>
+        sendResponse({ ok: false, error: err?.message || String(err) })
+      );
+    return true;
+  }
+
   return false;
 });
+
+async function handlePromptLibraryMessage(message) {
+  switch (message.type) {
+    case "PROMPT_LIBRARY_LIST":
+      return promptStore.listPrompts();
+    case "PROMPT_LIBRARY_GET":
+      return promptStore.getPrompt(message.id);
+    case "PROMPT_LIBRARY_SAVE":
+      return promptStore.savePrompt({
+        prompt: message.prompt,
+        imageDataUrl: message.imageDataUrl,
+        modelId: message.modelId,
+      });
+    case "PROMPT_LIBRARY_REMOVE":
+      return promptStore.removePrompt(message.id);
+    default:
+      throw new Error(`Unknown prompt library message: ${message.type}`);
+  }
+}
+
+async function ensureVoiceOffscreen(opts) {
+  const forceRecreate = Boolean(opts?.forceRecreate);
+  const url = chrome.runtime.getURL(OFFSCREEN_VOICE_URL);
+
+  async function hasOffscreen() {
+    if (!chrome.runtime.getContexts) return false;
+    const existing = await chrome.runtime.getContexts({
+      contextTypes: ["OFFSCREEN_DOCUMENT"],
+      documentUrls: [url],
+    });
+    return Boolean(existing?.length);
+  }
+
+  if (forceRecreate) {
+    try {
+      await chrome.offscreen.closeDocument();
+    } catch (_) {
+      /* ignore */
+    }
+  } else if (await hasOffscreen()) {
+    return;
+  }
+
+  try {
+    await chrome.offscreen.createDocument({
+      url: OFFSCREEN_VOICE_URL,
+      reasons: ["USER_MEDIA"],
+      justification: "Record microphone audio for prompt dictation",
+    });
+  } catch (err) {
+    const msg = String(err?.message || err || "");
+    if (!/already exists|Only a single offscreen/i.test(msg)) {
+      throw err;
+    }
+  }
+
+  for (let i = 0; i < 5; i += 1) {
+    if (await hasOffscreen()) return;
+    await new Promise((r) => setTimeout(r, 100 + i * 50));
+  }
+  if (!(await hasOffscreen())) {
+    throw new Error("Voice offscreen document failed to start");
+  }
+}
+
+function isPortClosedError(err) {
+  const msg = String(err?.message || err || "");
+  return /message port closed|receiving end does not exist|Could not establish connection/i.test(
+    msg
+  );
+}
+
+function sendOffscreenMessageOnce(type, payload) {
+  return new Promise((resolve, reject) => {
+    chrome.runtime.sendMessage(
+      { type, target: "offscreen-voice", ...(payload || {}) },
+      (response) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+          return;
+        }
+        resolve(response || { ok: false, error: "No response from offscreen" });
+      }
+    );
+  });
+}
+
+async function sendOffscreenMessage(type, payload) {
+  let lastErr;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      if (attempt > 0) {
+        await ensureVoiceOffscreen({ forceRecreate: attempt === 2 });
+        await new Promise((r) => setTimeout(r, 120 * attempt));
+      } else {
+        await ensureVoiceOffscreen();
+      }
+      return await sendOffscreenMessageOnce(type, payload);
+    } catch (err) {
+      lastErr = err;
+      if (!isPortClosedError(err) || attempt === 2) break;
+    }
+  }
+  throw lastErr || new Error("Voice bridge failed");
+}
+
+async function openMicPermissionTab() {
+  const url = chrome.runtime.getURL(MIC_PERMISSION_URL);
+  const tabs = await chrome.tabs.query({ url });
+  if (tabs?.[0]?.id) {
+    await chrome.tabs.update(tabs[0].id, { active: true });
+    if (tabs[0].windowId != null) {
+      await chrome.windows.update(tabs[0].windowId, { focused: true });
+    }
+    return tabs[0];
+  }
+  return chrome.tabs.create({ url, active: true });
+}
+
+async function ensureMicPermission() {
+  try {
+    await ensureVoiceOffscreen();
+    const probe = await sendOffscreenMessage("VOICE_OFFSCREEN_PROBE");
+    if (probe?.ok && probe.granted) {
+      return { ok: true, granted: true };
+    }
+    if (probe?.denied) {
+      await openMicPermissionTab();
+      return {
+        ok: true,
+        granted: false,
+        needsPermission: true,
+      };
+    }
+    await openMicPermissionTab();
+    return {
+      ok: true,
+      granted: false,
+      needsPermission: true,
+      error: probe?.error,
+    };
+  } catch (err) {
+    if (isPortClosedError(err)) {
+      try {
+        await ensureVoiceOffscreen({ forceRecreate: true });
+        const probe = await sendOffscreenMessage("VOICE_OFFSCREEN_PROBE");
+        if (probe?.ok && probe.granted) {
+          return { ok: true, granted: true };
+        }
+      } catch (_) {
+        /* fall through */
+      }
+      await openMicPermissionTab();
+      return {
+        ok: true,
+        granted: false,
+        needsPermission: true,
+        error:
+          "Mic bridge not ready. Allow microphone on the See & Capture tab, then try again.",
+      };
+    }
+    throw err;
+  }
+}
+
+async function startVoiceRecording() {
+  try {
+    await ensureVoiceOffscreen();
+    const started = await sendOffscreenMessage("VOICE_OFFSCREEN_START");
+    if (started?.ok) {
+      return { ok: true, recording: true };
+    }
+    if (started?.denied) {
+      await openMicPermissionTab();
+      return {
+        ok: false,
+        needsPermission: true,
+        error:
+          "Microphone permission needed. Allow mic on the See & Capture tab, then try again.",
+      };
+    }
+    return {
+      ok: false,
+      error: started?.error || "Could not start voice recording",
+    };
+  } catch (err) {
+    if (isPortClosedError(err)) {
+      await openMicPermissionTab();
+      return {
+        ok: false,
+        needsPermission: true,
+        error:
+          "Mic bridge not ready — allow mic on the See & Capture tab if opened, then try again.",
+      };
+    }
+    return { ok: false, error: err?.message || "Could not start voice recording" };
+  }
+}
+
+async function stopVoiceRecording() {
+  try {
+    await ensureVoiceOffscreen();
+    const stopped = await sendOffscreenMessage("VOICE_OFFSCREEN_STOP");
+    if (!stopped?.ok) {
+      return {
+        ok: false,
+        error: stopped?.error || "Could not stop voice recording",
+      };
+    }
+    return {
+      ok: true,
+      audioBase64: stopped.audioBase64 || "",
+      format: stopped.format || "webm",
+      empty: Boolean(stopped.empty),
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      error: isPortClosedError(err)
+        ? "Mic bridge closed while stopping. Try recording again."
+        : err?.message || "Could not stop voice recording",
+    };
+  }
+}
+
+async function cancelVoiceRecording() {
+  try {
+    await ensureVoiceOffscreen();
+    await sendOffscreenMessage("VOICE_OFFSCREEN_CANCEL");
+  } catch (_) {
+    /* ignore */
+  }
+  return { ok: true, cancelled: true };
+}
 
 async function handleMoodboardMessage(message) {
   switch (message.type) {
@@ -167,6 +451,16 @@ async function handleMoodboardMessage(message) {
     }
     case "MOODBOARD_REMOVE_IMAGE": {
       const board = await store.removeImage(message.boardId, message.imageId);
+      await syncReceiversFromStore();
+      await rebuildContextMenus();
+      return board;
+    }
+    case "MOODBOARD_UPDATE_IMAGE": {
+      const board = await store.updateImage(
+        message.boardId,
+        message.imageId,
+        message.dataUrl
+      );
       await syncReceiversFromStore();
       await rebuildContextMenus();
       return board;

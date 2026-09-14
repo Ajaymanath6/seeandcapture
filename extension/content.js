@@ -30,11 +30,16 @@
   let headerBackHandler = null;
   let promptInputRef = null;
   let applyBtnRef = null;
+  let micBtnRef = null;
+  let voiceSessionActive = false;
+  let voiceRecordingActive = false;
+  let voiceCancelled = false;
   let selectedAspectRatio = "original";
   let assetCountEl = null;
   let assetBadgesEl = null;
   let assetsPanelEl = null;
   let moodboardViewerApi = null;
+  let promptLibraryViewerApi = null;
   let selectedAssetMeta = {};
   let workflowMode = "all";
   let allWorkspaceRef = null;
@@ -54,6 +59,7 @@
   };
   let textRemixWorkspaceRef = null;
   let visualLocalizerWorkspaceRef = null;
+  let iconMixerWorkspaceRef = null;
   let textRemixMemory = {
     captureDataUrl: null,
     texts: [],
@@ -69,10 +75,64 @@
     results: {},
     pendingCapture: false,
   };
+  let iconMixerMemory = {
+    iconDataUrl: null,
+    resultDataUrl: null,
+    styleId: "clay",
+    accentColor: "#6366f1",
+    notes: "",
+  };
   let textRemixUi = {};
   let visualLocalizerUi = {};
+  let iconMixerUi = {};
+
+  const ICON_MIXER_STYLES = [
+    {
+      id: "glassmorphism",
+      label: "Glass",
+      prompt:
+        "Transform this icon into glassmorphism: frosted translucent layers, soft blur, subtle specular highlights, " +
+        "light refraction on edges, clean square app-icon framing, soft gradient or transparent ground. " +
+        "Keep the same symbol silhouette and composition—only change material and finish.",
+    },
+    {
+      id: "3d",
+      label: "3D",
+      prompt:
+        "Transform this icon into a polished 3D app icon: soft rounded extrusions, gentle studio lighting, " +
+        "subtle ambient occlusion and drop shadow, crisp edges, premium product look. " +
+        "Keep the same symbol silhouette—do not redesign the glyph.",
+    },
+    {
+      id: "candy",
+      label: "Candy",
+      prompt:
+        "Transform this icon into a glossy candy / jelly style: smooth shiny plastic, vibrant playful colors, " +
+        "rounded soft forms, sweet specular highlights, clean square framing. " +
+        "Preserve the exact symbol silhouette and readable shape.",
+    },
+    {
+      id: "clay",
+      label: "Clay",
+      prompt:
+        "Transform this icon into soft 3D clay / plasticine: matte finish, pastel or earthy tones, " +
+        "rounded edges, gentle top light, subtle surface fingerprints optional but keep clean, soft shadow. " +
+        "Keep the same glyph silhouette—only change material to clay.",
+    },
+    {
+      id: "neumorph",
+      label: "Neumorph",
+      prompt:
+        "Transform this icon into soft neumorphism: embossed/debossed look on a matching soft panel, " +
+        "subtle dual shadows (light and dark), low contrast, rounded corners, minimal flat-relief style. " +
+        "Preserve the exact symbol silhouette and proportions.",
+    },
+  ];
 
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.target === "offscreen-voice") {
+      return;
+    }
     if (message?.type === "SC_PING") {
       sendResponse({ ok: true });
       return;
@@ -293,6 +353,36 @@
     return visualLocalizerMemory;
   }
 
+  async function loadIconMixerMemory() {
+    try {
+      const data = await chrome.storage.local.get({ iconMixerState: null });
+      const raw = data.iconMixerState || {};
+      const styleOk = ICON_MIXER_STYLES.some((s) => s.id === raw.styleId);
+      iconMixerMemory = {
+        iconDataUrl: raw.iconDataUrl || null,
+        resultDataUrl: raw.resultDataUrl || null,
+        styleId: styleOk ? raw.styleId : "clay",
+        accentColor: /^#[0-9a-fA-F]{6}$/.test(String(raw.accentColor || ""))
+          ? raw.accentColor
+          : "#6366f1",
+        notes: typeof raw.notes === "string" ? raw.notes : "",
+      };
+    } catch (err) {
+      console.error(err);
+    }
+    return iconMixerMemory;
+  }
+
+  async function saveIconMixerMemory(patch) {
+    iconMixerMemory = { ...iconMixerMemory, ...(patch || {}) };
+    try {
+      await chrome.storage.local.set({ iconMixerState: iconMixerMemory });
+    } catch (err) {
+      console.error(err);
+    }
+    return iconMixerMemory;
+  }
+
   async function consumeTextWorkflowPending(dataUrl) {
     await loadTextRemixMemory();
     await loadVisualLocalizerMemory();
@@ -397,6 +487,9 @@
     headerBackHandler = null;
     promptInputRef = null;
     applyBtnRef = null;
+    stopVoiceCapture({ silent: true });
+    micBtnRef = null;
+    voiceSessionActive = false;
     selectedAspectRatio = "original";
     assetCountEl = null;
     assetBadgesEl = null;
@@ -412,8 +505,10 @@
     mashupGenerateBtnRef = null;
     textRemixWorkspaceRef = null;
     visualLocalizerWorkspaceRef = null;
+    iconMixerWorkspaceRef = null;
     textRemixUi = {};
     visualLocalizerUi = {};
+    iconMixerUi = {};
     workflowMode = "all";
   }
 
@@ -673,6 +768,10 @@
       "M12 22c4.97 0 9-2.16 9-5.5 0-1.52-1.05-2.87-2.72-3.86.17-.54.27-1.1.27-1.69C18.55 7.84 15.64 5 12 5S5.45 7.84 5.45 10.95c0 .59.1 1.15.27 1.69C4.05 13.63 3 14.98 3 16.5 3 19.84 7.03 22 12 22z",
     delete:
       "M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z",
+    mic: "M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.49 6-3.31 6-6.72h-1.7z",
+    stop: "M6 6h12v12H6z",
+    library_books:
+      "M4 6H2v14c0 1.1.9 2 2 2h14v-2H4V6zm16-4H8c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-1 9H9V9h10v2zm-4 4H9v-2h6v2zm4-8H9V5h10v2z",
   };
 
   function materialIcon(name, className) {
@@ -682,6 +781,248 @@
     const path = MATERIAL_PATHS[name] || MATERIAL_PATHS.close;
     wrap.innerHTML = `<svg viewBox="0 0 24 24" width="1em" height="1em" focusable="false"><path fill="currentColor" d="${path}"/></svg>`;
     return wrap;
+  }
+
+  function setVoiceUiState(state) {
+    voiceSessionActive = state === "recording" || state === "transcribing";
+    voiceRecordingActive = state === "recording";
+    if (applyBtnRef && !inFlight) {
+      applyBtnRef.disabled = voiceSessionActive;
+    }
+    if (!micBtnRef) return;
+    micBtnRef.classList.toggle("is-recording", state === "recording");
+    micBtnRef.classList.toggle("is-transcribing", state === "transcribing");
+    micBtnRef.setAttribute(
+      "aria-pressed",
+      state === "recording" ? "true" : "false"
+    );
+    micBtnRef.disabled = state === "transcribing";
+    micBtnRef.replaceChildren();
+    if (state === "transcribing") {
+      micBtnRef.title = "Transcribing…";
+      micBtnRef.setAttribute("aria-label", "Transcribing voice");
+      const label = document.createElement("span");
+      label.className = "sc-composer-mic-label";
+      label.textContent = "…";
+      micBtnRef.appendChild(label);
+    } else if (state === "recording") {
+      micBtnRef.title = "Stop recording";
+      micBtnRef.setAttribute("aria-label", "Stop voice recording");
+      micBtnRef.appendChild(materialIcon("stop", "sc-btn-icon"));
+    } else {
+      micBtnRef.title = "Dictate prompt";
+      micBtnRef.setAttribute("aria-label", "Dictate prompt with microphone");
+      micBtnRef.appendChild(materialIcon("mic", "sc-btn-icon"));
+    }
+  }
+
+  function sendVoiceMessage(type, payload) {
+    return new Promise((resolve, reject) => {
+      try {
+        chrome.runtime.sendMessage({ type, ...(payload || {}) }, (response) => {
+          if (chrome.runtime.lastError) {
+            reject(new Error(chrome.runtime.lastError.message));
+            return;
+          }
+          resolve(response || {});
+        });
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  function stopVoiceCapture(opts) {
+    const silent = Boolean(opts?.silent);
+    if (silent) voiceCancelled = true;
+    voiceRecordingActive = false;
+    sendVoiceMessage("VOICE_CANCEL").catch(() => {});
+    voiceSessionActive = false;
+    if (!silent) setVoiceUiState("idle");
+    else if (micBtnRef) {
+      micBtnRef.disabled = false;
+      micBtnRef.classList.remove("is-recording", "is-transcribing");
+    }
+  }
+
+  function appendTranscriptToPrompt(text) {
+    if (!promptInputRef || !text) return;
+    const existing = String(promptInputRef.value || "");
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    promptInputRef.value = existing
+      ? `${existing.replace(/\s+$/, "")} ${trimmed}`
+      : trimmed;
+    promptInputRef.focus();
+    promptInputRef.dispatchEvent(new Event("input", { bubbles: true }));
+  }
+
+  function formatVoiceError(err) {
+    const msg = String(err?.message || err || "");
+    if (/message port closed|receiving end does not exist|Could not establish connection/i.test(msg)) {
+      return "Mic bridge not ready — allow mic on the See & Capture tab if opened, then try again.";
+    }
+    return msg || "Microphone error";
+  }
+
+  async function requestTranscribe(audioBase64, format) {
+    try {
+      const health = await fetch("http://127.0.0.1:8787/health");
+      if (!health.ok) {
+        throw new Error(
+          "Local server is not healthy. Restart it on port 8787."
+        );
+      }
+      const healthJson = await health.json().catch(() => ({}));
+      if (healthJson && healthJson.hasStt === false) {
+        throw new Error(
+          "Speech-to-text needs OPENROUTER_API_KEY in server/.env, then restart the server."
+        );
+      }
+    } catch (err) {
+      if (/OPENROUTER_API_KEY|not healthy/i.test(String(err?.message))) {
+        throw err;
+      }
+      if (/Failed to fetch|NetworkError|Load failed/i.test(String(err?.message || err))) {
+        throw new Error(
+          "Could not reach local server on port 8787. Start it with: cd server && npm start"
+        );
+      }
+      // Older health payloads without hasStt still try /api/transcribe below.
+    }
+
+    let response;
+    try {
+      response = await fetch("http://127.0.0.1:8787/api/transcribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ audioBase64, format }),
+      });
+    } catch (_) {
+      throw new Error(
+        "Could not reach local server on port 8787. Start it with: cd server && npm start"
+      );
+    }
+    if (response.status === 404) {
+      throw new Error(
+        "Voice endpoint missing. Stop the old server and run: cd server && npm start"
+      );
+    }
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok || payload?.error) {
+      throw new Error(payload?.error || `Transcription failed (${response.status})`);
+    }
+    const text = String(payload?.text || "").trim();
+    if (!text) throw new Error("Transcription returned empty text");
+    return text;
+  }
+
+  async function finishVoiceRecording(audioBase64, format) {
+    if (voiceCancelled) {
+      voiceCancelled = false;
+      setVoiceUiState("idle");
+      return;
+    }
+    setVoiceUiState("transcribing");
+    try {
+      if (!audioBase64 || audioBase64.length < 32) {
+        throw new Error(
+          "Recording was too short. Tap the mic, speak, then tap again to stop."
+        );
+      }
+      const text = await requestTranscribe(audioBase64, format || "webm");
+      if (voiceCancelled) {
+        voiceCancelled = false;
+        setVoiceUiState("idle");
+        return;
+      }
+      appendTranscriptToPrompt(text);
+    } catch (err) {
+      if (!voiceCancelled) {
+        alert(err?.message || "Could not transcribe audio");
+      }
+    } finally {
+      voiceCancelled = false;
+      setVoiceUiState("idle");
+    }
+  }
+
+  async function startVoiceRecording() {
+    if (voiceSessionActive || inFlight) return;
+    voiceCancelled = false;
+
+    let ensure;
+    try {
+      ensure = await sendVoiceMessage("VOICE_ENSURE_MIC");
+    } catch (err) {
+      alert(formatVoiceError(err));
+      return;
+    }
+
+    if (ensure?.needsPermission || ensure?.granted === false) {
+      alert(
+        ensure?.error ||
+          "Allow the microphone on the See & Capture tab that just opened, then tap the mic again."
+      );
+      return;
+    }
+
+    let started;
+    try {
+      started = await sendVoiceMessage("VOICE_START");
+    } catch (err) {
+      alert(formatVoiceError(err));
+      return;
+    }
+
+    if (started?.needsPermission) {
+      alert(
+        started.error ||
+          "Allow the microphone on the See & Capture tab, then tap the mic again."
+      );
+      return;
+    }
+    if (!started?.ok) {
+      alert(started?.error || "Could not start voice recording.");
+      return;
+    }
+
+    setVoiceUiState("recording");
+  }
+
+  async function stopAndTranscribeVoice() {
+    if (!voiceRecordingActive) return;
+    setVoiceUiState("transcribing");
+    let stopped;
+    try {
+      stopped = await sendVoiceMessage("VOICE_STOP");
+    } catch (err) {
+      setVoiceUiState("idle");
+      alert(formatVoiceError(err));
+      return;
+    }
+    if (!stopped?.ok) {
+      setVoiceUiState("idle");
+      alert(stopped?.error || "Could not stop recording.");
+      return;
+    }
+    if (stopped.empty) {
+      setVoiceUiState("idle");
+      alert(
+        "Recording was too short. Tap the mic, speak, then tap again to stop."
+      );
+      return;
+    }
+    await finishVoiceRecording(stopped.audioBase64, stopped.format);
+  }
+
+  async function toggleVoiceCapture() {
+    if (voiceRecordingActive) {
+      await stopAndTranscribeVoice();
+      return;
+    }
+    if (voiceSessionActive) return;
+    await startVoiceRecording();
   }
 
   async function showModal(captureDataUrl, opts) {
@@ -695,7 +1036,14 @@
     await loadMashupMemory();
     await loadTextRemixMemory();
     await loadVisualLocalizerMemory();
-    const allowed = ["all", "mashup", "text-remix", "visual-localizer"];
+    await loadIconMixerMemory();
+    const allowed = [
+      "all",
+      "mashup",
+      "text-remix",
+      "visual-localizer",
+      "icon-mixer",
+    ];
     const initialWorkflow = allowed.includes(opts?.workflow)
       ? opts.workflow
       : "all";
@@ -795,6 +1143,7 @@
     addWorkflowOption("mashup", "See & Capture – Mashup");
     addWorkflowOption("text-remix", "Text Remix");
     addWorkflowOption("visual-localizer", "Visual Localizer");
+    addWorkflowOption("icon-mixer", "Icon Mixer");
 
     workflowBtn.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -893,6 +1242,20 @@
       showMoodboardsPanel();
     });
 
+    const promptsBtn = document.createElement("button");
+    promptsBtn.type = "button";
+    promptsBtn.className = "sc-boards-btn";
+    promptsBtn.appendChild(materialIcon("library_books", "sc-btn-icon"));
+    const promptsLabel = document.createElement("span");
+    promptsLabel.textContent = "Prompts";
+    promptsBtn.appendChild(promptsLabel);
+    promptsBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeSavePop();
+      menuPop.classList.add("is-hidden");
+      showPromptLibraryPanel();
+    });
+
     const menuWrap = document.createElement("div");
     menuWrap.className = "sc-menu-wrap";
     const menuBtn = document.createElement("button");
@@ -928,6 +1291,7 @@
     headerActions.className = "sc-header-actions";
     headerActions.appendChild(saveWrap);
     headerActions.appendChild(boardsBtn);
+    headerActions.appendChild(promptsBtn);
     headerActions.appendChild(menuWrap);
     headerActionsRef = headerActions;
 
@@ -1014,12 +1378,15 @@
     textRemixWorkspaceRef = textRemixWorkspace;
     const visualLocalizerWorkspace = buildVisualLocalizerWorkspace();
     visualLocalizerWorkspaceRef = visualLocalizerWorkspace;
+    const iconMixerWorkspace = buildIconMixerWorkspace();
+    iconMixerWorkspaceRef = iconMixerWorkspace;
 
     modal.appendChild(header);
     modal.appendChild(allWorkspace);
     modal.appendChild(mashupWorkspace);
     modal.appendChild(textRemixWorkspace);
     modal.appendChild(visualLocalizerWorkspace);
+    modal.appendChild(iconMixerWorkspace);
     glass.appendChild(modal);
     root.appendChild(glass);
     shadowRoot.appendChild(root);
@@ -1092,7 +1459,13 @@
   }
 
   function setWorkflowMode(mode) {
-    const allowed = ["all", "mashup", "text-remix", "visual-localizer"];
+    const allowed = [
+      "all",
+      "mashup",
+      "text-remix",
+      "visual-localizer",
+      "icon-mixer",
+    ];
     workflowMode = allowed.includes(mode) ? mode : "all";
     if (allWorkspaceRef) {
       allWorkspaceRef.classList.toggle("is-hidden", workflowMode !== "all");
@@ -1115,12 +1488,19 @@
         workflowMode !== "visual-localizer"
       );
     }
+    if (iconMixerWorkspaceRef) {
+      iconMixerWorkspaceRef.classList.toggle(
+        "is-hidden",
+        workflowMode !== "icon-mixer"
+      );
+    }
     if (workflowLabelRef) {
       const labels = {
         all: "All",
         mashup: "Mashup",
         "text-remix": "Text Remix",
         "visual-localizer": "Localizer",
+        "icon-mixer": "Icon Mixer",
       };
       workflowLabelRef.textContent = labels[workflowMode] || "All";
     }
@@ -1135,6 +1515,7 @@
     if (workflowMode === "mashup") refreshMashupPreviews();
     if (workflowMode === "text-remix") refreshTextRemixUi();
     if (workflowMode === "visual-localizer") refreshVisualLocalizerUi();
+    if (workflowMode === "icon-mixer") refreshIconMixerUi();
   }
 
   function setPreviewImage(el, dataUrl, emptyText) {
@@ -1591,6 +1972,292 @@
     wrap.appendChild(resultWrap);
     refreshVisualLocalizerUi();
     return wrap;
+  }
+
+  function refreshIconMixerUi() {
+    const iconWrap = iconMixerUi.iconWrap;
+    const resultWrap = iconMixerUi.resultWrap;
+    if (iconWrap) {
+      setPreviewImage(
+        iconWrap,
+        iconMixerMemory.iconDataUrl,
+        "Drop or upload an icon (PNG, SVG, WebP)"
+      );
+    }
+    if (resultWrap) {
+      setPreviewImage(
+        resultWrap,
+        iconMixerMemory.resultDataUrl,
+        "Styled icon appears here"
+      );
+    }
+    if (iconMixerUi.styleRow) {
+      iconMixerUi.styleRow
+        .querySelectorAll(".sc-im-style-chip")
+        .forEach((chip) => {
+          chip.classList.toggle(
+            "is-selected",
+            chip.dataset.styleId === iconMixerMemory.styleId
+          );
+        });
+    }
+    if (iconMixerUi.colorInput && iconMixerUi.colorInput.value !== iconMixerMemory.accentColor) {
+      iconMixerUi.colorInput.value = iconMixerMemory.accentColor;
+    }
+    if (iconMixerUi.hexInput) {
+      iconMixerUi.hexInput.value = iconMixerMemory.accentColor;
+    }
+    if (iconMixerUi.notesInput && iconMixerUi.notesInput.value !== iconMixerMemory.notes) {
+      iconMixerUi.notesInput.value = iconMixerMemory.notes || "";
+    }
+    if (iconMixerUi.buildBtn) {
+      iconMixerUi.buildBtn.disabled = !iconMixerMemory.iconDataUrl || inFlight;
+    }
+  }
+
+  function buildIconMixerPrompt() {
+    const style =
+      ICON_MIXER_STYLES.find((s) => s.id === iconMixerMemory.styleId) ||
+      ICON_MIXER_STYLES.find((s) => s.id === "clay");
+    const parts = [
+      "Restyle the attached icon only. Preserve the exact glyph silhouette, proportions, and recognizable symbol. Do not invent a different icon or add extra objects.",
+      style?.prompt || "",
+    ];
+    if (iconMixerMemory.accentColor) {
+      parts.push(
+        `Prefer accent / primary color ${iconMixerMemory.accentColor} where the style uses color, without breaking silhouette readability.`
+      );
+    }
+    const notes = String(iconMixerMemory.notes || "").trim();
+    if (notes) {
+      parts.push(`Additional direction: ${notes}`);
+    }
+    parts.push("Return one polished square app-icon render.");
+    return parts.filter(Boolean).join(" ");
+  }
+
+  async function setIconMixerIconFromFile(file) {
+    if (!file) return;
+    const okType =
+      /^image\/(png|svg\+xml|webp|jpeg|jpg|gif)$/i.test(file.type) ||
+      /\.(png|svg|webp|jpe?g|gif)$/i.test(file.name || "");
+    if (!okType) {
+      alert("Use a PNG, SVG, WebP, or JPEG icon file.");
+      return;
+    }
+    try {
+      const dataUrl = await readFileAsDataUrl(file);
+      await saveIconMixerMemory({ iconDataUrl: dataUrl, resultDataUrl: null });
+      refreshIconMixerUi();
+    } catch (err) {
+      alert(err?.message || "Could not load icon");
+    }
+  }
+
+  function buildIconMixerWorkspace() {
+    const wrap = document.createElement("div");
+    wrap.className = "sc-workspace sc-workspace-icon-mixer is-hidden";
+
+    const body = document.createElement("div");
+    body.className = "sc-body sc-im-body";
+
+    const left = document.createElement("div");
+    left.className = "sc-pane";
+    const leftLabel = document.createElement("p");
+    leftLabel.className = "sc-pane-label";
+    leftLabel.textContent = "Icon";
+    const iconWrap = document.createElement("div");
+    iconWrap.className = "sc-image-wrap is-capture sc-im-drop";
+    iconMixerUi.iconWrap = iconWrap;
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = "image/png,image/svg+xml,image/webp,image/jpeg,.svg";
+    fileInput.className = "sc-im-file";
+    fileInput.hidden = true;
+    fileInput.addEventListener("change", async () => {
+      const file = fileInput.files && fileInput.files[0];
+      fileInput.value = "";
+      await setIconMixerIconFromFile(file);
+    });
+    iconWrap.addEventListener("dragover", (e) => {
+      e.preventDefault();
+      iconWrap.classList.add("is-dragover");
+    });
+    iconWrap.addEventListener("dragleave", () => {
+      iconWrap.classList.remove("is-dragover");
+    });
+    iconWrap.addEventListener("drop", async (e) => {
+      e.preventDefault();
+      iconWrap.classList.remove("is-dragover");
+      const file = e.dataTransfer?.files?.[0];
+      await setIconMixerIconFromFile(file);
+    });
+    left.appendChild(leftLabel);
+    left.appendChild(iconWrap);
+
+    const right = document.createElement("div");
+    right.className = "sc-pane";
+    const rightLabel = document.createElement("p");
+    rightLabel.className = "sc-pane-label";
+    rightLabel.textContent = "Result";
+    const resultWrap = document.createElement("div");
+    resultWrap.className = "sc-image-wrap is-result";
+    iconMixerUi.resultWrap = resultWrap;
+    right.appendChild(rightLabel);
+    right.appendChild(resultWrap);
+
+    body.appendChild(left);
+    body.appendChild(right);
+
+    const uploadRow = document.createElement("div");
+    uploadRow.className = "sc-im-upload-row";
+    const uploadBtn = document.createElement("button");
+    uploadBtn.type = "button";
+    uploadBtn.className = "sc-mashup-capture-btn";
+    uploadBtn.textContent = "Upload icon";
+    uploadBtn.addEventListener("click", () => fileInput.click());
+    const hint = document.createElement("span");
+    hint.className = "sc-im-hint";
+    hint.textContent = "From Phosphor, Material, Remix Icons, etc.";
+    uploadRow.appendChild(uploadBtn);
+    uploadRow.appendChild(hint);
+
+    const styleLabel = document.createElement("p");
+    styleLabel.className = "sc-im-section-label";
+    styleLabel.textContent = "Style template";
+    const styleRow = document.createElement("div");
+    styleRow.className = "sc-im-style-row";
+    iconMixerUi.styleRow = styleRow;
+    ICON_MIXER_STYLES.forEach((style) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "sc-im-style-chip";
+      chip.dataset.styleId = style.id;
+      chip.textContent = style.label;
+      chip.title = style.label;
+      chip.addEventListener("click", async () => {
+        await saveIconMixerMemory({ styleId: style.id });
+        refreshIconMixerUi();
+      });
+      styleRow.appendChild(chip);
+    });
+
+    const controls = document.createElement("div");
+    controls.className = "sc-im-controls";
+    const colorWrap = document.createElement("label");
+    colorWrap.className = "sc-im-color-wrap";
+    colorWrap.textContent = "Accent";
+    const colorInput = document.createElement("input");
+    colorInput.type = "color";
+    colorInput.className = "sc-im-color";
+    colorInput.value = iconMixerMemory.accentColor || "#6366f1";
+    iconMixerUi.colorInput = colorInput;
+    const hexInput = document.createElement("input");
+    hexInput.type = "text";
+    hexInput.className = "sc-im-hex";
+    hexInput.maxLength = 7;
+    hexInput.value = iconMixerMemory.accentColor || "#6366f1";
+    iconMixerUi.hexInput = hexInput;
+    colorInput.addEventListener("input", async () => {
+      await saveIconMixerMemory({ accentColor: colorInput.value });
+      hexInput.value = colorInput.value;
+    });
+    hexInput.addEventListener("change", async () => {
+      let v = String(hexInput.value || "").trim();
+      if (!v.startsWith("#")) v = `#${v}`;
+      if (!/^#[0-9a-fA-F]{6}$/.test(v)) {
+        hexInput.value = iconMixerMemory.accentColor;
+        return;
+      }
+      await saveIconMixerMemory({ accentColor: v });
+      colorInput.value = v;
+    });
+    colorWrap.appendChild(colorInput);
+    colorWrap.appendChild(hexInput);
+
+    const notes = document.createElement("input");
+    notes.type = "text";
+    notes.className = "sc-im-notes";
+    notes.placeholder = "Optional notes (e.g. softer shadow, thicker stroke)…";
+    notes.value = iconMixerMemory.notes || "";
+    iconMixerUi.notesInput = notes;
+    notes.addEventListener("change", async () => {
+      await saveIconMixerMemory({ notes: notes.value });
+    });
+
+    controls.appendChild(colorWrap);
+    controls.appendChild(notes);
+
+    const buildBtn = document.createElement("button");
+    buildBtn.type = "button";
+    buildBtn.className = "sc-mashup-generate sc-im-build-btn";
+    buildBtn.textContent = "Build Icon";
+    iconMixerUi.buildBtn = buildBtn;
+    buildBtn.addEventListener("click", () => runIconMixerBuild());
+
+    wrap.appendChild(body);
+    wrap.appendChild(uploadRow);
+    wrap.appendChild(fileInput);
+    wrap.appendChild(styleLabel);
+    wrap.appendChild(styleRow);
+    wrap.appendChild(controls);
+    wrap.appendChild(buildBtn);
+    refreshIconMixerUi();
+    return wrap;
+  }
+
+  async function runIconMixerBuild() {
+    if (!iconMixerMemory.iconDataUrl) {
+      alert("Upload or drop an icon first.");
+      return;
+    }
+    if (inFlight) return;
+    inFlight = true;
+    if (iconMixerUi.buildBtn) {
+      iconMixerUi.buildBtn.disabled = true;
+      iconMixerUi.buildBtn.textContent = "Building…";
+    }
+    const resultWrap = iconMixerUi.resultWrap;
+    if (resultWrap) {
+      resultWrap.innerHTML = "";
+      const working = document.createElement("div");
+      working.className = "sc-tw-empty";
+      working.textContent = "Building icon…";
+      resultWrap.appendChild(working);
+    }
+    try {
+      const prompt = buildIconMixerPrompt();
+      const data = await requestEdit("icon-mixer", {
+        imageDataUrl: iconMixerMemory.iconDataUrl,
+        prompt,
+        useAssets: false,
+        preferDirect: true,
+      });
+      await saveIconMixerMemory({ resultDataUrl: data.imageDataUrl });
+      refreshIconMixerUi();
+      chrome.runtime.sendMessage({
+        type: "SAVE_RESULT",
+        presetId: "icon-mixer",
+        captureDataUrl: iconMixerMemory.iconDataUrl,
+        resultDataUrl: data.imageDataUrl,
+      });
+    } catch (err) {
+      if (resultWrap) {
+        setPreviewImage(resultWrap, null, err?.message || "Build failed");
+      }
+      alert(
+        formatProviderError(
+          err?.message,
+          "Icon build failed. Is the local server running on port 8787?"
+        )
+      );
+    } finally {
+      inFlight = false;
+      if (iconMixerUi.buildBtn) {
+        iconMixerUi.buildBtn.disabled = !iconMixerMemory.iconDataUrl;
+        iconMixerUi.buildBtn.textContent = "Build Icon";
+      }
+    }
   }
 
   async function runTextRemixDetect() {
@@ -2213,6 +2880,16 @@
     applyBtnRef = applyBtn;
     applyBtn.addEventListener("click", () => runPromptApply(rightWrap));
 
+    const micBtn = document.createElement("button");
+    micBtn.type = "button";
+    micBtn.className = "sc-composer-mic";
+    micBtnRef = micBtn;
+    setVoiceUiState("idle");
+    micBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleVoiceCapture();
+    });
+
     const tipWrap = document.createElement("div");
     tipWrap.className = "sc-apply-tip-wrap";
     const tipBtn = document.createElement("button");
@@ -2346,6 +3023,7 @@
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter" && !e.shiftKey) {
         e.preventDefault();
+        if (voiceSessionActive) return;
         runPromptApply(rightWrap);
       }
     });
@@ -2353,6 +3031,7 @@
     toolbar.appendChild(assetsWrap);
     toolbar.appendChild(aspectWrap);
     toolbar.appendChild(tipWrap);
+    toolbar.appendChild(micBtn);
     toolbar.appendChild(applyBtn);
     field.appendChild(badges);
     field.appendChild(input);
@@ -2601,7 +3280,7 @@
   }
 
   async function runPromptApply(rightWrap) {
-    if (inFlight || !croppedDataUrl) return;
+    if (inFlight || voiceSessionActive || !croppedDataUrl) return;
     const prompt = String(promptInputRef?.value || "").trim();
     if (!prompt) {
       alert("Write a prompt describing what to change.");
@@ -2709,6 +3388,7 @@
       mashupWorkspaceRef,
       textRemixWorkspaceRef,
       visualLocalizerWorkspaceRef,
+      iconMixerWorkspaceRef,
     ].forEach((el) => {
       if (el) el.classList.add("is-hidden");
     });
@@ -2735,9 +3415,12 @@
   function clearModalSubviews() {
     if (!modalRef) return;
     modalRef
-      .querySelectorAll(".sc-boards-view, .sc-moodboard")
+      .querySelectorAll(
+        ".sc-boards-view, .sc-moodboard, .sc-prompt-lib-view, .sc-prompt-lib"
+      )
       .forEach((el) => el.remove());
     moodboardViewerApi = null;
+    promptLibraryViewerApi = null;
   }
 
   function restoreCaptureView() {
@@ -2885,6 +3568,10 @@
         chip.addEventListener("click", async () => {
           await openMoodboardViewer(board.id);
         });
+        window.SeeCapturePromptLibraryUI?.attachTiltHover?.(chip, {
+          maxTilt: 5,
+          scale: 1.01,
+        });
         list.appendChild(chip);
       });
     }
@@ -2898,6 +3585,155 @@
     view.appendChild(list);
     modalRef.appendChild(view);
     search.focus();
+  }
+
+  async function showPromptLibraryPanel() {
+    if (!modalRef) return;
+    clearModalSubviews();
+    promptLibraryViewerApi = null;
+    hideCaptureChrome();
+    showHeaderBack(() => restoreCaptureView());
+
+    const view = document.createElement("div");
+    view.className = "sc-prompt-lib-view";
+
+    const heading = document.createElement("h3");
+    heading.className = "sc-boards-view-title";
+    heading.textContent = "Prompt library";
+
+    const search = document.createElement("input");
+    search.type = "search";
+    search.className = "sc-boards-search";
+    search.placeholder = "Search prompts…";
+    search.setAttribute("aria-label", "Search saved prompts");
+
+    const list = document.createElement("div");
+    list.className = "sc-prompt-lib-chips";
+
+    let entries = [];
+    try {
+      entries = (await window.SeeCapturePromptLibrary?.listPrompts?.()) || [];
+    } catch (err) {
+      console.error(err);
+    }
+
+    function renderChips(filterText) {
+      list.innerHTML = "";
+      const q = String(filterText || "")
+        .trim()
+        .toLowerCase();
+      const filtered = q
+        ? entries.filter((e) =>
+            String(e.prompt || "")
+              .toLowerCase()
+              .includes(q)
+          )
+        : entries;
+
+      if (!filtered.length) {
+        const empty = document.createElement("div");
+        empty.className = "sc-board-empty";
+        empty.textContent = entries.length
+          ? "No prompts match your search."
+          : "No saved prompts yet. Use Get the prompt, then Save.";
+        list.appendChild(empty);
+        return;
+      }
+
+      const truncate =
+        window.SeeCapturePromptLibraryUI?.truncatePrompt ||
+        ((t, n) => String(t || "").slice(0, n));
+
+      filtered.forEach((entry) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "sc-prompt-lib-chip";
+
+        const thumb = document.createElement("img");
+        thumb.className = "sc-prompt-lib-chip-thumb";
+        thumb.src = entry.imageDataUrl || "";
+        thumb.alt = "";
+
+        const body = document.createElement("div");
+        body.className = "sc-prompt-lib-chip-body";
+        const nameEl = document.createElement("span");
+        nameEl.className = "sc-prompt-lib-chip-name";
+        nameEl.textContent = truncate(entry.prompt, 72);
+        const meta = document.createElement("span");
+        meta.className = "sc-prompt-lib-chip-meta";
+        meta.textContent = entry.modelId
+          ? String(entry.modelId)
+          : "Saved prompt";
+        body.appendChild(nameEl);
+        body.appendChild(meta);
+
+        chip.appendChild(thumb);
+        chip.appendChild(body);
+        chip.addEventListener("click", async () => {
+          await openPromptLibraryViewer(entry.id);
+        });
+        window.SeeCapturePromptLibraryUI?.attachTiltHover?.(chip, {
+          maxTilt: 5,
+          scale: 1.01,
+        });
+        list.appendChild(chip);
+      });
+    }
+
+    search.addEventListener("input", () => renderChips(search.value));
+    renderChips("");
+
+    view.appendChild(heading);
+    view.appendChild(search);
+    view.appendChild(list);
+    modalRef.appendChild(view);
+    search.focus();
+  }
+
+  async function openPromptLibraryViewer(entryId) {
+    if (!modalRef) return;
+    const api = window.SeeCapturePromptLibrary;
+    const ui = window.SeeCapturePromptLibraryUI;
+    if (!api?.getPrompt || !ui?.mountPromptLibraryViewer) {
+      alert("Prompt library is not available. Reload the extension.");
+      return;
+    }
+
+    let entry;
+    try {
+      entry = await api.getPrompt(entryId);
+    } catch (err) {
+      alert(err?.message || "Could not open prompt");
+      return;
+    }
+    if (!entry) {
+      alert("Prompt not found.");
+      return;
+    }
+
+    clearModalSubviews();
+    hideCaptureChrome();
+    showHeaderBack(() => {
+      if (promptLibraryViewerApi?.close) promptLibraryViewerApi.close();
+      promptLibraryViewerApi = null;
+      showPromptLibraryPanel();
+    });
+
+    promptLibraryViewerApi = ui.mountPromptLibraryViewer({
+      hostEl: modalRef,
+      entry,
+      onBack: () => {
+        if (promptLibraryViewerApi?.close) promptLibraryViewerApi.close();
+        promptLibraryViewerApi = null;
+        showPromptLibraryPanel();
+      },
+      onDeleted: () => {
+        if (promptLibraryViewerApi?.close) promptLibraryViewerApi.close();
+        promptLibraryViewerApi = null;
+        showAppToast("Prompt deleted", "");
+        showPromptLibraryPanel();
+      },
+    });
   }
 
   function showAppToast(titleText, subText) {
@@ -3190,7 +4026,8 @@
     return stage;
   }
 
-  function buildPromptBelow(promptText, modelId) {
+  function buildPromptBelow(promptText, modelId, opts) {
+    const imageUrl = opts?.imageUrl || null;
     const pane = document.createElement("div");
     pane.className = "sc-prompt-below";
     const toolbar = document.createElement("div");
@@ -3210,6 +4047,10 @@
     copyBtn.type = "button";
     copyBtn.className = "sc-prompt-copy-btn";
     copyBtn.textContent = "Copy";
+    const saveBtn = document.createElement("button");
+    saveBtn.type = "button";
+    saveBtn.className = "sc-prompt-copy-btn";
+    saveBtn.textContent = "Save";
     const area = document.createElement("textarea");
     area.className = "sc-prompt-output";
     area.value = String(promptText || "").trim();
@@ -3229,7 +4070,42 @@
         alert("Could not copy automatically — select and copy manually.");
       }
     });
+    saveBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const text = String(area.value || "").trim();
+      if (!text) {
+        alert("Prompt is empty.");
+        return;
+      }
+      if (!imageUrl) {
+        alert("Missing image for this prompt.");
+        return;
+      }
+      const lib = window.SeeCapturePromptLibrary;
+      if (!lib?.savePrompt) {
+        alert("Prompt library is not available. Reload the extension.");
+        return;
+      }
+      try {
+        saveBtn.disabled = true;
+        await lib.savePrompt({
+          prompt: text,
+          imageDataUrl: imageUrl,
+          modelId: modelId || null,
+        });
+        saveBtn.textContent = "Saved";
+        showAppToast("Prompt saved", "Open Prompts in the top bar");
+        setTimeout(() => {
+          saveBtn.textContent = "Save";
+          saveBtn.disabled = false;
+        }, 1400);
+      } catch (err) {
+        saveBtn.disabled = false;
+        alert(err?.message || "Could not save prompt");
+      }
+    });
     toolbar.appendChild(copyBtn);
+    toolbar.appendChild(saveBtn);
     pane.appendChild(toolbar);
     pane.appendChild(area);
     pane.addEventListener("click", (e) => e.stopPropagation());
@@ -3270,7 +4146,9 @@
     if (existingPalette) existingPalette.remove();
 
     ensurePaneImageStage(wrap, imageUrl, actionTarget);
-    wrap.appendChild(buildPromptBelow(promptText, modelId));
+    wrap.appendChild(
+      buildPromptBelow(promptText, modelId, { imageUrl, actionTarget })
+    );
     setSelectedPane(actionTarget === "capture" ? "capture" : "result");
     requestAnimationFrame(() => {
       const below = wrap.querySelector(".sc-prompt-below");

@@ -189,6 +189,8 @@
     let patternIndex = Number(current.settings?.patternIndex) || 0;
     let dragFromId = null;
     let detailImage = null;
+    let detailSourceImage = null;
+    let pendingVariationUrl = null;
     let selectedDetailHex = null;
     let detailBusy = false;
     let pointerDownOnTile = null;
@@ -253,6 +255,10 @@
     }
     detailHeroWrap.appendChild(detailHero);
     detailHeroWrap.appendChild(detailDeleteBtn);
+    window.SeeCapturePromptLibraryUI?.attachTiltHover?.(detailHeroWrap, {
+      maxTilt: 6,
+      scale: 1.02,
+    });
     detailStage.appendChild(detailBlur);
     detailStage.appendChild(detailHeroWrap);
     stage.appendChild(detailStage);
@@ -445,6 +451,31 @@
     variationBtn.textContent = "+ Generate variation";
     variationBtn.disabled = true;
 
+    const variationActions = document.createElement("div");
+    variationActions.className =
+      "sc-moodboard-variation-actions is-hidden";
+    const saveVariationBtn = document.createElement("button");
+    saveVariationBtn.type = "button";
+    saveVariationBtn.className =
+      "sc-moodboard-generate sc-moodboard-variation-save";
+    saveVariationBtn.textContent = "Save";
+    saveVariationBtn.title = "Add this variation to the board";
+    const replaceVariationBtn = document.createElement("button");
+    replaceVariationBtn.type = "button";
+    replaceVariationBtn.className =
+      "sc-moodboard-export sc-moodboard-variation-replace";
+    replaceVariationBtn.textContent = "Replace";
+    replaceVariationBtn.title = "Replace the current board image";
+    const discardVariationBtn = document.createElement("button");
+    discardVariationBtn.type = "button";
+    discardVariationBtn.className =
+      "sc-moodboard-export sc-moodboard-variation-discard";
+    discardVariationBtn.textContent = "Discard";
+    discardVariationBtn.title = "Discard this variation preview";
+    variationActions.appendChild(saveVariationBtn);
+    variationActions.appendChild(replaceVariationBtn);
+    variationActions.appendChild(discardVariationBtn);
+
     const detailBackBtn = document.createElement("button");
     detailBackBtn.type = "button";
     detailBackBtn.className = "sc-moodboard-export sc-moodboard-detail-back";
@@ -459,6 +490,7 @@
     detailSide.appendChild(colorsLabel);
     detailSide.appendChild(colorsRow);
     detailSide.appendChild(variationBtn);
+    detailSide.appendChild(variationActions);
     detailSide.appendChild(detailHint);
     detailSide.appendChild(detailBackBtn);
 
@@ -757,11 +789,41 @@
       variationBtn.textContent = detailBusy
         ? "Generating…"
         : "+ Generate variation";
+      saveVariationBtn.disabled = detailBusy || !pendingVariationUrl;
+      replaceVariationBtn.disabled = detailBusy || !pendingVariationUrl;
+      discardVariationBtn.disabled = detailBusy || !pendingVariationUrl;
       colorsRow
         .querySelectorAll(".sc-mb-color-dot")
         .forEach((el) => {
           el.disabled = detailBusy;
         });
+    }
+
+    function syncVariationActions() {
+      const hasPending = Boolean(pendingVariationUrl);
+      variationActions.classList.toggle("is-hidden", !hasPending);
+      saveVariationBtn.disabled = detailBusy || !hasPending;
+      replaceVariationBtn.disabled = detailBusy || !hasPending;
+      discardVariationBtn.disabled = detailBusy || !hasPending;
+      if (hasPending) {
+        detailHint.textContent =
+          "Save adds to the board. Replace overwrites this image. Discard reverts.";
+      } else if (selectedDetailHex) {
+        detailHint.textContent =
+          "Variation keeps layout and shifts the color theme.";
+      }
+    }
+
+    function applyDetailPreview(dataUrl) {
+      if (!dataUrl) return;
+      detailHero.src = dataUrl;
+      detailThumb.src = dataUrl;
+      detailBlur.style.backgroundImage = `url("${dataUrl}")`;
+    }
+
+    function clearPendingVariation() {
+      pendingVariationUrl = null;
+      syncVariationActions();
     }
 
     function renderDetailColors(hexes) {
@@ -800,10 +862,10 @@
     async function openImageDetail(img) {
       if (!img?.dataUrl) return;
       detailImage = img;
+      detailSourceImage = { ...img };
+      pendingVariationUrl = null;
       selectedDetailHex = null;
-      detailHero.src = img.dataUrl;
-      detailThumb.src = img.dataUrl;
-      detailBlur.style.backgroundImage = `url("${img.dataUrl}")`;
+      applyDetailPreview(img.dataUrl);
       canvas.classList.add("is-hidden");
       previewActions.classList.add("is-hidden");
       detailStage.classList.remove("is-hidden");
@@ -813,6 +875,7 @@
       colorsRow.innerHTML = "";
       colorsRow.textContent = "Extracting colors…";
       variationBtn.disabled = true;
+      syncVariationActions();
       try {
         const hexes = extractColors
           ? await extractColors(img.dataUrl)
@@ -832,6 +895,8 @@
 
     function closeImageDetail() {
       detailImage = null;
+      detailSourceImage = null;
+      pendingVariationUrl = null;
       selectedDetailHex = null;
       detailBusy = false;
       detailHero.removeAttribute("src");
@@ -842,6 +907,7 @@
       detailSide.classList.add("is-hidden");
       shell.classList.remove("is-detail");
       canvas.classList.remove("is-hidden");
+      syncVariationActions();
       setDetailBusy(false);
       applyLayout();
     }
@@ -1059,29 +1125,32 @@
     });
     variationBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
-      if (detailBusy || !detailImage?.dataUrl || !selectedDetailHex) return;
+      if (detailBusy || !detailSourceImage?.dataUrl || !selectedDetailHex) {
+        return;
+      }
       if (!requestVariation) {
         alert("Variation is unavailable in this view.");
         return;
       }
       setDetailBusy(true);
       try {
+        const sourceUrl = pendingVariationUrl || detailSourceImage.dataUrl;
         const data = await requestVariation({
-          imageDataUrl: detailHero.src || detailImage.dataUrl,
+          imageDataUrl: sourceUrl,
           hex: selectedDetailHex,
         });
         const nextUrl = data?.imageDataUrl;
         if (!nextUrl) throw new Error("No image returned.");
-        detailHero.src = nextUrl;
-        detailThumb.src = nextUrl;
-        detailBlur.style.backgroundImage = `url("${nextUrl}")`;
-        detailImage = { ...detailImage, dataUrl: nextUrl };
+        pendingVariationUrl = nextUrl;
+        applyDetailPreview(nextUrl);
+        syncVariationActions();
         try {
           const hexes = extractColors ? await extractColors(nextUrl) : [];
           renderDetailColors(hexes);
         } catch (_err) {
           /* keep prior palette */
         }
+        syncVariationActions();
       } catch (err) {
         console.error(err);
         alert(err?.message || "Could not generate variation.");
@@ -1089,6 +1158,87 @@
         setDetailBusy(false);
       }
     });
+
+    saveVariationBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (detailBusy || !pendingVariationUrl || !current?.id) return;
+      setDetailBusy(true);
+      try {
+        current = await window.SeeCaptureMoodboards.addImage(
+          current.id,
+          pendingVariationUrl
+        );
+        onBoardUpdated?.(current);
+        const images = current.images || [];
+        const newest = images[images.length - 1];
+        clearPendingVariation();
+        applyLayout();
+        if (newest) {
+          await openImageDetail(newest);
+        }
+      } catch (err) {
+        console.error(err);
+        alert(err?.message || "Could not save variation");
+      } finally {
+        setDetailBusy(false);
+      }
+    });
+
+    replaceVariationBtn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      if (
+        detailBusy ||
+        !pendingVariationUrl ||
+        !current?.id ||
+        !detailImage?.id
+      ) {
+        return;
+      }
+      setDetailBusy(true);
+      try {
+        current = await window.SeeCaptureMoodboards.updateImage(
+          current.id,
+          detailImage.id,
+          pendingVariationUrl
+        );
+        onBoardUpdated?.(current);
+        const updated = (current.images || []).find(
+          (img) => img && img.id === detailImage.id
+        );
+        clearPendingVariation();
+        applyLayout();
+        if (updated) {
+          await openImageDetail(updated);
+        }
+      } catch (err) {
+        console.error(err);
+        alert(err?.message || "Could not replace image");
+      } finally {
+        setDetailBusy(false);
+      }
+    });
+
+    discardVariationBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (detailBusy || !pendingVariationUrl) return;
+      clearPendingVariation();
+      const originalUrl = detailSourceImage?.dataUrl || detailImage?.dataUrl;
+      if (originalUrl) applyDetailPreview(originalUrl);
+      detailHint.textContent =
+        "Variation keeps layout and shifts the color theme.";
+      if (originalUrl && extractColors) {
+        extractColors(originalUrl)
+          .then((hexes) => {
+            if (!detailImage) return;
+            renderDetailColors(hexes);
+            syncVariationActions();
+          })
+          .catch(() => {});
+      } else {
+        syncVariationActions();
+      }
+    });
+
     copyAiBtn.addEventListener("click", (e) => {
       e.stopPropagation();
       copySelectedForAiSequential();

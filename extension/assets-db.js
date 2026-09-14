@@ -4,9 +4,10 @@
  */
 (() => {
   const DB_NAME = "seeandcapture";
-  const DB_VERSION = 3;
+  const DB_VERSION = 4;
   const STORE = "assets";
   const MOODBOARD_STORE = "moodboards";
+  const PROMPT_STORE = "promptLibrary";
 
   const FIXED_PALETTES = [
     {
@@ -60,6 +61,11 @@
           const mb = db.createObjectStore(MOODBOARD_STORE, { keyPath: "id" });
           mb.createIndex("updatedAt", "updatedAt", { unique: false });
           mb.createIndex("lastOpenedAt", "lastOpenedAt", { unique: false });
+        }
+        if (!db.objectStoreNames.contains(PROMPT_STORE)) {
+          const prompts = db.createObjectStore(PROMPT_STORE, { keyPath: "id" });
+          prompts.createIndex("updatedAt", "updatedAt", { unique: false });
+          prompts.createIndex("createdAt", "createdAt", { unique: false });
         }
       };
       request.onsuccess = () => resolve(request.result);

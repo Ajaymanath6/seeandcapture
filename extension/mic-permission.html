@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>See &amp; Capture — Microphone</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: "Segoe UI", system-ui, sans-serif;
+      }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: center;
+        background: #f8fafc;
+        color: #0f172a;
+      }
+      .card {
+        width: min(420px, 92vw);
+        background: #fff;
+        border: 1px solid #e2e8f0;
+        border-radius: 16px;
+        padding: 28px 24px;
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+      }
+      h1 {
+        margin: 0 0 8px;
+        font-size: 20px;
+        font-weight: 700;
+      }
+      p {
+        margin: 0 0 18px;
+        font-size: 14px;
+        line-height: 1.5;
+        color: #475569;
+      }
+      button {
+        appearance: none;
+        border: none;
+        border-radius: 12px;
+        background: #1a1a1b;
+        color: #fff;
+        font-size: 14px;
+        font-weight: 650;
+        padding: 10px 16px;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: not-allowed;
+      }
+      .status {
+        margin-top: 14px;
+        font-size: 13px;
+        color: #334155;
+        min-height: 1.2em;
+      }
+      .status.is-ok {
+        color: #15803d;
+      }
+      .status.is-err {
+        color: #b91c1c;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>Allow microphone</h1>
+      <p>
+        See &amp; Capture needs microphone access once for voice prompts. Click
+        below, choose <strong>Allow</strong>, then return to your tab and tap
+        the mic again.
+      </p>
+      <button id="allowBtn" type="button">Allow microphone</button>
+      <div id="status" class="status" role="status"></div>
+    </main>
+    <script src="mic-permission.js"></script>
+  </body>
+</html>

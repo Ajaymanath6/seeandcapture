@@ -5,7 +5,7 @@ const dotenv = require("dotenv");
 
 dotenv.config({ path: path.join(__dirname, ".env") });
 
-const { getPreset, listPresetMeta } = require("./prompts");
+const { getPreset, listPresetMeta, listIconMixerStyles } = require("./prompts");
 const { editWithNanoBanana, describeImagePrompt, generateTextWithGemini, DESCRIBE_PROMPT_INSTRUCTION } = require("./providers/gemini");
 const { editWithFal } = require("./providers/fal");
 const { editWithFluxApi } = require("./providers/fluxapi");
@@ -15,7 +15,19 @@ const {
   replaceSubjectWithEden,
   describeImagePromptWithEden,
 } = require("./providers/eden");
-const { describeImagePromptWithOpenRouter } = require("./providers/openrouter");
+const {
+  describeImagePromptWithOpenRouter,
+} = require("./providers/openrouter");
+const {
+  transcribeAudio,
+  resolveSttBackend,
+  resolveSttModel,
+} = require("./providers/stt");
+const {
+  removeBackgroundWithRembg,
+  hasRembgUrl,
+  resolveRembgModel,
+} = require("./providers/rembg");
 const { editLocally } = require("./providers/localEdit");
 const { downscaleImageDataUrl } = require("./lib/downscaleImage");
 const { assertPromptQuality } = require("./lib/promptQuality");
@@ -120,6 +132,8 @@ app.use(
 app.use(express.json({ limit: "40mb" }));
 
 app.get("/health", (_req, res) => {
+  const sttBackend = resolveSttBackend();
+  const rembgConfigured = hasRembgUrl();
   res.json({
     ok: true,
     service: "seeandcapture-server",
@@ -127,12 +141,20 @@ app.get("/health", (_req, res) => {
     hasFalKey: hasFalKey(),
     hasEdenKey: hasEdenKey(),
     hasOpenRouterKey: hasOpenRouterKey(),
+    hasStt: Boolean(sttBackend),
+    hasRembg: rembgConfigured,
     preferredModel: preferredModel(),
+    sttBackend,
+    sttModel: resolveSttModel(),
+    rembgModel: rembgConfigured ? resolveRembgModel() : null,
   });
 });
 
 app.get("/api/presets", (_req, res) => {
-  res.json({ presets: listPresetMeta() });
+  res.json({
+    presets: listPresetMeta(),
+    iconMixerStyles: listIconMixerStyles(),
+  });
 });
 
 app.post("/api/paste-queue", async (req, res) => {
@@ -296,6 +318,37 @@ app.post("/api/translate-copy", async (req, res) => {
   } catch (err) {
     console.error("POST /api/translate-copy failed:", err);
     res.status(502).json({ error: err?.message || "Translate failed" });
+  }
+});
+
+app.post("/api/transcribe", async (req, res) => {
+  try {
+    const { audioBase64, format } = req.body || {};
+    if (!audioBase64 || typeof audioBase64 !== "string") {
+      res.status(400).json({ error: "audioBase64 is required" });
+      return;
+    }
+    if (!resolveSttBackend()) {
+      res.status(500).json({
+        error:
+          "Speech-to-text needs LOCAL_STT_URL, OPENAI_API_KEY, or OPENROUTER_API_KEY in server/.env. For OpenRouter STT use a key from https://openrouter.ai/keys (no free Whisper models — default is openai/whisper-large-v3-turbo), then restart.",
+      });
+      return;
+    }
+
+    const result = await transcribeAudio({
+      audioBase64,
+      format: format || "webm",
+    });
+    res.json({
+      ok: true,
+      text: result.text,
+      model: result.model,
+      backend: result.backend,
+    });
+  } catch (err) {
+    console.error("POST /api/transcribe failed:", err);
+    res.status(502).json({ error: err?.message || "Transcription failed" });
   }
 });
 
@@ -511,8 +564,9 @@ app.post("/api/edit", async (req, res) => {
       });
       usedModel = "local";
     } else if (preset.mode === "eden-background-removal") {
-      resultDataUrl = await runRemoveBackground(imageDataUrl);
-      usedModel = hasFluxKey() ? "flux-bg-removal" : "eden-bg-removal";
+      const removed = await runRemoveBackground(imageDataUrl);
+      resultDataUrl = removed.imageDataUrl;
+      usedModel = removed.model;
     } else if (
       preset.mode === "eden-replace-subject" ||
       preset.mode === "mashup-hybrid"
@@ -545,7 +599,8 @@ app.post("/api/edit", async (req, res) => {
       let subjectDataUrl = assetDataUrl;
       if (preset.mode === "mashup-hybrid") {
         try {
-          subjectDataUrl = await runRemoveBackground(assetDataUrl);
+          const removed = await runRemoveBackground(assetDataUrl);
+          subjectDataUrl = removed.imageDataUrl;
         } catch (err) {
           console.warn(
             "[edit] mashup rembg failed, using original subject:",
@@ -606,30 +661,40 @@ app.post("/api/edit", async (req, res) => {
   }
 });
 
+/**
+ * True background removal: local rembg BiRefNet first, then Eden API.
+ * Never uses Flux generative edit for rembg.
+ * @returns {Promise<{ imageDataUrl: string, model: string }>}
+ */
 async function runRemoveBackground(imageDataUrl) {
   const errors = [];
-  if (hasFluxKey()) {
+
+  if (hasRembgUrl()) {
     try {
-      return await editWithFluxApi({
+      const imageDataUrlOut = await removeBackgroundWithRembg({
         imageDataUrl,
-        prompt:
-          "Remove the background from this image. Keep the main subject sharp and unchanged on a transparent or clean background.",
-        apiKey: process.env.FLUXAPI_API_KEY,
       });
+      return { imageDataUrl: imageDataUrlOut, model: "rembg-birefnet" };
     } catch (err) {
-      console.warn("[edit] Flux remove-bg failed, trying Eden:", err?.message);
+      console.warn(
+        "[edit] rembg BiRefNet failed, trying Eden:",
+        err?.message || err
+      );
       errors.push(err?.message || String(err));
     }
   }
+
   if (hasEdenKey()) {
-    return removeBackgroundWithEden({
+    const imageDataUrlOut = await removeBackgroundWithEden({
       imageDataUrl,
       apiKey: process.env.EDEN_AI_API_KEY,
     });
+    return { imageDataUrl: imageDataUrlOut, model: "eden-bg-removal" };
   }
+
   throw new Error(
     errors[0] ||
-      "No remove-background provider configured. Set FLUXAPI_API_KEY or EDEN_AI_API_KEY."
+      "No remove-background provider configured. Set REMBG_URL (local rembg BiRefNet) or EDEN_AI_API_KEY."
   );
 }
 

@@ -4,7 +4,7 @@
  */
 (() => {
   const DB_NAME = "seeandcapture";
-  const DB_VERSION = 3;
+  const DB_VERSION = 4;
   const STORE = "moodboards";
 
   const DEFAULT_SETTINGS = {
@@ -29,6 +29,13 @@
           const store = db.createObjectStore(STORE, { keyPath: "id" });
           store.createIndex("updatedAt", "updatedAt", { unique: false });
           store.createIndex("lastOpenedAt", "lastOpenedAt", { unique: false });
+        }
+        if (!db.objectStoreNames.contains("promptLibrary")) {
+          const prompts = db.createObjectStore("promptLibrary", {
+            keyPath: "id",
+          });
+          prompts.createIndex("updatedAt", "updatedAt", { unique: false });
+          prompts.createIndex("createdAt", "createdAt", { unique: false });
         }
       };
       request.onsuccess = () => resolve(request.result);
@@ -239,6 +246,50 @@
     });
   }
 
+  async function updateImage(boardId, imageId, dataUrl) {
+    if (!imageId) throw new Error("Image id is required");
+    if (!dataUrl) throw new Error("Image is required");
+    const db = await openDb();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, "readwrite");
+      const store = tx.objectStore(STORE);
+      const request = store.get(boardId);
+      request.onsuccess = () => {
+        const board = request.result;
+        if (!board) {
+          reject(new Error("Moodboard not found"));
+          return;
+        }
+        const images = Array.isArray(board.images) ? board.images : [];
+        const idx = images.findIndex((img) => img && img.id === imageId);
+        if (idx < 0) {
+          reject(new Error("Image not found on moodboard"));
+          return;
+        }
+        images[idx] = {
+          ...images[idx],
+          dataUrl,
+        };
+        board.images = images;
+        board.updatedAt = Date.now();
+        board.lastOpenedAt = board.updatedAt;
+        store.put(board);
+        tx.oncomplete = () => {
+          db.close();
+          resolve(board);
+        };
+      };
+      request.onerror = () => {
+        db.close();
+        reject(request.error);
+      };
+      tx.onerror = () => {
+        db.close();
+        reject(tx.error);
+      };
+    });
+  }
+
   async function reorderImages(boardId, orderedIds) {
     const db = await openDb();
     return new Promise((resolve, reject) => {
@@ -346,6 +397,7 @@
     createMoodboard,
     addImage,
     removeImage,
+    updateImage,
     updateSettings,
     reorderImages,
     touchOpened,

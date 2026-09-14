@@ -11,6 +11,23 @@ services:
     environment:
       HOST: "0.0.0.0"
       PORT: "8787"
+      # Inside Compose, reach rembg by service name (override in .env if needed)
+      REMBG_URL: ${REMBG_URL:-http://rembg:7000}
+      REMBG_MODEL: ${REMBG_MODEL:-birefnet-general}
+    depends_on:
+      - rembg
+    networks:
+      - seeandcapture
+    restart: unless-stopped
+
+  rembg:
+    image: danielgatis/rembg:latest
+    container_name: seeandcapture-rembg
+    command: ["s", "--host", "0.0.0.0", "--port", "7000", "--no-ui"]
+    ports:
+      - "7000:7000"
+    volumes:
+      - rembg-models:/root/.u2net
     networks:
       - seeandcapture
     restart: unless-stopped
@@ -18,3 +35,6 @@ services:
 networks:
   seeandcapture:
     driver: bridge
+
+volumes:
+  rembg-models:

@@ -10,7 +10,8 @@
     "unlimitedStorage",
     "contextMenus",
     "scripting",
-    "clipboardWrite"
+    "clipboardWrite",
+    "offscreen"
   ],
   "host_permissions": [
     "<all_urls>",
@@ -57,9 +58,15 @@
         "assets-db.js",
         "moodboard-db.js",
         "moodboard-ui.js",
+        "prompt-library-db.js",
+        "prompt-library-ui.js",
         "blend.js",
         "payload.js",
         "preview-edit.js",
+        "mic-permission.html",
+        "mic-permission.js",
+        "offscreen-voice.html",
+        "offscreen-voice.js",
         "icons/logo.png"
       ],
       "matches": [
