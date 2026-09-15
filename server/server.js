@@ -7,7 +7,7 @@ dotenv.config({ path: path.join(__dirname, ".env") });
 
 const { getPreset, listPresetMeta, listIconMixerStyles } = require("./prompts");
 const { editWithNanoBanana, describeImagePrompt, generateTextWithGemini, DESCRIBE_PROMPT_INSTRUCTION, DESCRIBE_STYLE_INSTRUCTION } = require("./providers/gemini");
-const { editWithFal } = require("./providers/fal");
+const { editWithFal, mashupWithFalMulti } = require("./providers/fal");
 const { editWithFluxApi } = require("./providers/fluxapi");
 const {
   editWithEden,
@@ -37,7 +37,14 @@ const {
   parseTranslateCopyResponse,
   buildTranslateInstruction,
   buildTextSwapUserPrompt,
+  buildTextEraseUserPrompt,
 } = require("./lib/textDetect");
+const {
+  buildCodeInstruction,
+  parseCodeResponse,
+  applyThemeToCode,
+  normalizeTheme,
+} = require("./lib/imageToCode");
 const {
   PASTE_GAP_MS,
   enqueuePasteQueue,
@@ -197,8 +204,14 @@ app.post("/api/detect-text", async (req, res) => {
         const usedModel =
           typeof raw === "object" && raw?.model ? raw.model : modelId;
         const parsed = parseDetectTextResponse(text);
-        console.log(`[detect-text] ok via ${label} count=${parsed.texts.length}`);
-        res.json({ texts: parsed.texts, model: usedModel });
+        console.log(
+          `[detect-text] ok via ${label} count=${parsed.texts.length} icons=${(parsed.icons || []).length}`
+        );
+        res.json({
+          texts: parsed.texts,
+          icons: parsed.icons || [],
+          model: usedModel,
+        });
         return true;
       } catch (err) {
         console.warn(`[detect-text] ${label} failed:`, err?.message || err);
@@ -439,6 +452,95 @@ app.post("/api/get-prompt", async (req, res) => {
   }
 });
 
+app.post("/api/get-code", async (req, res) => {
+  try {
+    const { imageDataUrl, theme: themeRaw } = req.body || {};
+    if (!imageDataUrl || typeof imageDataUrl !== "string") {
+      res.status(400).json({ error: "imageDataUrl is required" });
+      return;
+    }
+    if (!hasGoogleKey() && !hasOpenRouterKey() && !hasEdenKey()) {
+      res.status(500).json({
+        error:
+          "No vision provider configured. Set GOOGLE_API_KEY, OPENROUTER_API_KEY (free), or EDEN_AI_API_KEY in server/.env, then restart.",
+      });
+      return;
+    }
+
+    const theme = normalizeTheme(themeRaw);
+    const instruction = buildCodeInstruction(theme);
+    const scaled = downscaleImageDataUrl(imageDataUrl);
+    console.log(
+      `[get-code] imageBytes≈${imageDataUrl.length} scaledBytes≈${scaled.length}`
+    );
+
+    const errors = [];
+
+    async function tryProvider(label, modelId, runner) {
+      try {
+        const raw = await runner();
+        const text =
+          typeof raw === "string" ? raw : raw?.prompt || raw?.text || "";
+        const usedModel =
+          typeof raw === "object" && raw?.model ? raw.model : modelId;
+        const parsed = parseCodeResponse(text);
+        const code = applyThemeToCode(parsed, theme);
+        console.log(`[get-code] ok via ${label} (${usedModel})`);
+        res.json({ code, model: usedModel, theme });
+        return true;
+      } catch (err) {
+        console.warn(`[get-code] ${label} failed:`, err?.message || err);
+        errors.push(`${label}: ${err?.message || String(err)}`);
+        return false;
+      }
+    }
+
+    if (hasGoogleKey()) {
+      const ok = await tryProvider("Gemini", "gemini-2.5-flash", () =>
+        describeImagePrompt({
+          imageDataUrl: scaled,
+          apiKey: process.env.GOOGLE_API_KEY,
+          instruction,
+        })
+      );
+      if (ok) return;
+    }
+
+    if (hasOpenRouterKey()) {
+      const ok = await tryProvider("OpenRouter", "openrouter", () =>
+        describeImagePromptWithOpenRouter({
+          imageDataUrl: scaled,
+          apiKey: process.env.OPENROUTER_API_KEY,
+          instruction,
+        })
+      );
+      if (ok) return;
+    }
+
+    if (hasEdenKey()) {
+      const ok = await tryProvider("Eden", "eden-vision", () =>
+        describeImagePromptWithEden({
+          imageDataUrl: scaled,
+          apiKey: process.env.EDEN_AI_API_KEY,
+          instruction,
+        })
+      );
+      if (ok) return;
+    }
+
+    res.status(502).json({
+      error:
+        errors.join(" | ") ||
+        "Could not generate code. Check GOOGLE_API_KEY or add OPENROUTER_API_KEY.",
+    });
+  } catch (err) {
+    console.error("POST /api/get-code failed:", err);
+    res.status(502).json({
+      error: err?.message || "Could not generate code",
+    });
+  }
+});
+
 app.post("/api/get-style", async (req, res) => {
   try {
     const { imageDataUrl } = req.body || {};
@@ -627,7 +729,9 @@ app.post("/api/edit", async (req, res) => {
       const replacements = Array.isArray(req.body?.replacements)
         ? req.body.replacements
         : [];
-      if (!replacements.length && !userPrompt) {
+      const eraseTextOnly = Boolean(req.body?.eraseTextOnly);
+      const fromCleanPlate = Boolean(req.body?.fromCleanPlate);
+      if (!replacements.length && !userPrompt && !eraseTextOnly) {
         res.status(400).json({
           error: "text-swap requires replacements or a prompt",
         });
@@ -637,9 +741,21 @@ app.post("/api/edit", async (req, res) => {
         typeof req.body?.languageLabel === "string"
           ? req.body.languageLabel.trim()
           : "";
-      const swapBody = replacements.length
-        ? buildTextSwapUserPrompt(replacements, languageLabel || null)
-        : userPrompt;
+      let swapBody;
+      if (eraseTextOnly) {
+        const eraseSources = replacements.length
+          ? replacements
+          : Array.isArray(req.body?.texts)
+            ? req.body.texts
+            : [];
+        swapBody = buildTextEraseUserPrompt(eraseSources);
+      } else if (replacements.length) {
+        swapBody = buildTextSwapUserPrompt(replacements, languageLabel || null, {
+          fromCleanPlate,
+        });
+      } else {
+        swapBody = userPrompt;
+      }
       basePrompt = `${preset.prompt}\n\n${swapBody}`;
       try {
         editImageDataUrl = downscaleImageDataUrl(imageDataUrl);
@@ -660,10 +776,104 @@ app.post("/api/edit", async (req, res) => {
       const removed = await runRemoveBackground(imageDataUrl);
       resultDataUrl = removed.imageDataUrl;
       usedModel = removed.model;
-    } else if (
-      preset.mode === "eden-replace-subject" ||
-      preset.mode === "mashup-hybrid"
-    ) {
+    } else if (preset.mode === "mashup-hybrid") {
+      const assetUrl =
+        Array.isArray(assets) &&
+        assets.find((a) => a && (a.dataUrl || a.imageDataUrl));
+      const assetDataUrl =
+        topLevelSubject ||
+        assetUrl?.dataUrl ||
+        assetUrl?.imageDataUrl ||
+        null;
+      if (!assetDataUrl) {
+        res.status(400).json({
+          error: "mashup-hybrid requires a subject image dataUrl",
+        });
+        return;
+      }
+      if (!hasFalKey() && !hasEdenKey()) {
+        res.status(500).json({
+          error:
+            "Mashup needs FAL_KEY (preferred) or EDEN_AI_API_KEY in server/.env.",
+        });
+        return;
+      }
+
+      let styleDataUrl = imageDataUrl;
+      let subjectDataUrl = assetDataUrl;
+      try {
+        styleDataUrl = downscaleImageDataUrl(imageDataUrl);
+      } catch (err) {
+        console.warn("[edit] mashup style downscale failed:", err?.message || err);
+      }
+      try {
+        subjectDataUrl = downscaleImageDataUrl(assetDataUrl);
+      } catch (err) {
+        console.warn(
+          "[edit] mashup subject downscale failed:",
+          err?.message || err
+        );
+      }
+
+      try {
+        const removed = await runRemoveBackground(subjectDataUrl);
+        subjectDataUrl = removed.imageDataUrl;
+      } catch (err) {
+        console.warn(
+          "[edit] mashup rembg failed, using original subject:",
+          err?.message || err
+        );
+      }
+
+      const mashupPrompt = userPrompt
+        ? `${preset.prompt}\n\nAdditional direction:\n${userPrompt}`
+        : preset.prompt;
+
+      const errors = [];
+      let mashupOk = false;
+
+      if (hasFalKey()) {
+        try {
+          resultDataUrl = await mashupWithFalMulti({
+            styleDataUrl,
+            subjectDataUrl,
+            prompt: mashupPrompt,
+            apiKey: process.env.FAL_KEY,
+          });
+          usedModel = "fal-kontext-max-multi";
+          mashupOk = true;
+        } catch (err) {
+          console.warn("[edit] fal multi mashup failed:", err?.message || err);
+          errors.push(`fal: ${err?.message || String(err)}`);
+        }
+      }
+
+      if (!mashupOk && hasEdenKey()) {
+        try {
+          resultDataUrl = await replaceSubjectWithEden({
+            sceneDataUrl: styleDataUrl,
+            assetDataUrl: subjectDataUrl,
+            prompt: mashupPrompt,
+            apiKey: process.env.EDEN_AI_API_KEY,
+            allowV2Fallback: false,
+          });
+          usedModel = "eden-v3-mashup";
+          mashupOk = true;
+        } catch (err) {
+          console.warn("[edit] eden v3 mashup failed:", err?.message || err);
+          errors.push(`eden: ${err?.message || String(err)}`);
+        }
+      }
+
+      if (!mashupOk) {
+        res.status(502).json({
+          error:
+            errors.join(" | ") ||
+            "Mashup failed. Unlock fal.ai billing or check EDEN_AI_API_KEY.",
+        });
+        return;
+      }
+    } else if (preset.mode === "eden-replace-subject") {
       if (!hasEdenKey()) {
         res.status(500).json({
           error:
@@ -681,43 +891,18 @@ app.post("/api/edit", async (req, res) => {
         null;
       if (!assetDataUrl) {
         res.status(400).json({
-          error:
-            preset.mode === "mashup-hybrid"
-              ? "mashup-hybrid requires a subject image dataUrl"
-              : "replace-with-asset requires a selected image asset dataUrl",
+          error: "replace-with-asset requires a selected image asset dataUrl",
         });
         return;
       }
 
-      let subjectDataUrl = assetDataUrl;
-      if (preset.mode === "mashup-hybrid") {
-        try {
-          const removed = await runRemoveBackground(assetDataUrl);
-          subjectDataUrl = removed.imageDataUrl;
-        } catch (err) {
-          console.warn(
-            "[edit] mashup rembg failed, using original subject:",
-            err?.message || err
-          );
-        }
-        if (userPrompt) {
-          basePrompt = `${preset.prompt}\n\nAdditional direction:\n${userPrompt}`;
-        }
-      }
-
       resultDataUrl = await replaceSubjectWithEden({
         sceneDataUrl: imageDataUrl,
-        assetDataUrl: subjectDataUrl,
-        prompt:
-          preset.mode === "mashup-hybrid" && userPrompt
-            ? `${preset.prompt}\n\nAdditional direction:\n${userPrompt}`
-            : promptWithContext,
+        assetDataUrl,
+        prompt: promptWithContext,
         apiKey: process.env.EDEN_AI_API_KEY,
       });
-      usedModel =
-        preset.mode === "mashup-hybrid"
-          ? "mashup-hybrid"
-          : "eden-replace-subject";
+      usedModel = "eden-replace-subject";
     } else {
       const ai = await runPromptEdit({
         imageDataUrl: editImageDataUrl,

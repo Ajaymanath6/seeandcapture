@@ -172,6 +172,7 @@
       requestVariation,
       requestRemoveBg,
       requestGetStyle,
+      onRestyleImage,
       buildShipPack,
       downloadShipPack,
       showToast,
@@ -256,6 +257,8 @@
     detailHeroWrap.className = "sc-moodboard-detail-hero";
     const detailHero = document.createElement("img");
     detailHero.alt = "Selected image";
+    const detailActions = document.createElement("div");
+    detailActions.className = "sc-moodboard-detail-actions";
     const detailDeleteBtn = document.createElement("button");
     detailDeleteBtn.type = "button";
     detailDeleteBtn.className = "sc-preview-btn sc-moodboard-detail-delete";
@@ -266,8 +269,23 @@
     } else {
       detailDeleteBtn.textContent = "⌫";
     }
+    const detailRestyleBtn = document.createElement("button");
+    detailRestyleBtn.type = "button";
+    detailRestyleBtn.className = "sc-preview-btn sc-moodboard-detail-restyle";
+    detailRestyleBtn.setAttribute("aria-label", "Restyle in See & Capture");
+    detailRestyleBtn.title = "Restyle";
+    if (materialIcon) {
+      detailRestyleBtn.appendChild(materialIcon("auto_fix"));
+      const restyleLabel = document.createElement("span");
+      restyleLabel.textContent = "Restyle";
+      detailRestyleBtn.appendChild(restyleLabel);
+    } else {
+      detailRestyleBtn.textContent = "Restyle";
+    }
+    detailActions.appendChild(detailDeleteBtn);
+    detailActions.appendChild(detailRestyleBtn);
     detailHeroWrap.appendChild(detailHero);
-    detailHeroWrap.appendChild(detailDeleteBtn);
+    detailHeroWrap.appendChild(detailActions);
     window.SeeCapturePromptLibraryUI?.attachTiltHover?.(detailHeroWrap, {
       maxTilt: 6,
       scale: 1.02,
@@ -283,9 +301,6 @@
     styleCardInner.type = "button";
     styleCardInner.className = "sc-style-card-inner";
     styleCardInner.setAttribute("aria-expanded", "false");
-    const styleCardImg = document.createElement("img");
-    styleCardImg.className = "sc-style-card-img";
-    styleCardImg.alt = "";
     const styleCardBody = document.createElement("div");
     styleCardBody.className = "sc-style-card-body";
     const styleCardTitle = document.createElement("div");
@@ -297,7 +312,6 @@
     styleCardBody.appendChild(styleCardTitle);
     styleCardBody.appendChild(styleCardTags);
     styleCardBody.appendChild(styleCardDesc);
-    styleCardInner.appendChild(styleCardImg);
     styleCardInner.appendChild(styleCardBody);
     const styleCardActions = document.createElement("div");
     styleCardActions.className = "sc-style-card-actions";
@@ -1171,7 +1185,7 @@
         .join("\n\n");
     }
 
-    function renderStyleCard(payload, imageUrl) {
+    function renderStyleCard(payload) {
       stylePayload = payload || null;
       if (!payload) {
         styleCard.classList.add("is-hidden");
@@ -1180,7 +1194,6 @@
         styleCardInner.setAttribute("aria-expanded", "false");
         return;
       }
-      styleCardImg.src = imageUrl || detailHero.src || "";
       styleCardTitle.textContent = payload.title || "Style";
       styleCardTags.innerHTML = "";
       (payload.tags || []).forEach((tag) => {
@@ -1503,6 +1516,23 @@
         alert(err?.message || "Could not remove image");
       }
     });
+    detailRestyleBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (detailBusy) return;
+      if (typeof onRestyleImage !== "function") {
+        alert("Restyle is unavailable in this view.");
+        return;
+      }
+      const sourceUrl =
+        pendingVariationUrl ||
+        detailHero.src ||
+        detailSourceImage?.dataUrl ||
+        detailImage?.dataUrl;
+      if (!sourceUrl) return;
+      onRestyleImage(sourceUrl);
+    });
+    detailRestyleBtn.disabled = typeof onRestyleImage !== "function";
     variationBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
       if (detailBusy || !detailSourceImage?.dataUrl || !selectedDetailHex) {
@@ -1558,7 +1588,7 @@
       try {
         const data = await requestGetStyle(sourceUrl);
         styleExpanded = false;
-        renderStyleCard(data, sourceUrl);
+        renderStyleCard(data);
         notifyToast(data.title || "Style ready", "Tap the card to expand · Copy style");
       } catch (err) {
         console.error(err);

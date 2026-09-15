@@ -63,9 +63,16 @@
   let textRemixMemory = {
     captureDataUrl: null,
     texts: [],
+    icons: [],
     resultDataUrl: null,
+    cleanPlateDataUrl: null,
+    logoRegion: null,
+    logoAssetId: null,
+    logoAssetDataUrl: null,
     pendingCapture: false,
   };
+  let textRemixLogoSelectActive = false;
+  let textRemixLogoDrag = null;
   let visualLocalizerMemory = {
     captureDataUrl: null,
     texts: [],
@@ -298,7 +305,12 @@
       textRemixMemory = {
         captureDataUrl: raw.captureDataUrl || null,
         texts: Array.isArray(raw.texts) ? raw.texts : [],
+        icons: Array.isArray(raw.icons) ? raw.icons : [],
         resultDataUrl: raw.resultDataUrl || null,
+        cleanPlateDataUrl: raw.cleanPlateDataUrl || null,
+        logoRegion: normalizeLogoRegion(raw.logoRegion),
+        logoAssetId: raw.logoAssetId || null,
+        logoAssetDataUrl: raw.logoAssetDataUrl || null,
         pendingCapture: Boolean(raw.pendingCapture),
       };
     } catch (err) {
@@ -390,7 +402,12 @@
       await saveTextRemixMemory({
         captureDataUrl: dataUrl,
         texts: [],
+        icons: [],
         resultDataUrl: null,
+        cleanPlateDataUrl: null,
+        logoRegion: null,
+        logoAssetId: null,
+        logoAssetDataUrl: null,
         pendingCapture: false,
       });
       return "text-remix";
@@ -1546,7 +1563,13 @@
     ) {
       tips.push("Top up Flux credits at fluxapi.ai (they do not refill daily).");
     }
-    if (lower.includes("locked") || lower.includes("top_up")) {
+    if (
+      lower.includes("locked") ||
+      lower.includes("top_up") ||
+      lower.includes("fal.ai") ||
+      lower.includes("fal multi") ||
+      lower.includes("fal:")
+    ) {
       tips.push(
         "Unlock/top up fal.ai billing (or regenerate the API key after topping up)."
       );
@@ -1557,6 +1580,11 @@
       lower.includes("api key not valid")
     ) {
       tips.push("Fix GOOGLE_API_KEY in server/.env (current key is invalid).");
+    }
+    if (lower.includes("mashup") && lower.includes("eden")) {
+      tips.push(
+        "Mashup needs a working FAL_KEY (Kontext multi) or Eden v3 — inventing fallbacks are disabled."
+      );
     }
     if (!tips.length) return raw;
     return `${tips.join(" ")}\n\nDetails: ${raw}`;
@@ -1579,18 +1607,406 @@
     }
   }
 
+  function normalizeLogoRegion(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const x = Number(raw.x);
+    const y = Number(raw.y);
+    const w = Number(raw.w);
+    const h = Number(raw.h);
+    if (![x, y, w, h].every((n) => Number.isFinite(n))) return null;
+    if (w < 0.01 || h < 0.01) return null;
+    return {
+      x: Math.min(1, Math.max(0, x)),
+      y: Math.min(1, Math.max(0, y)),
+      w: Math.min(1, Math.max(0.01, w)),
+      h: Math.min(1, Math.max(0.01, h)),
+    };
+  }
+
+  function isTextRemixLogoReady() {
+    return Boolean(
+      normalizeLogoRegion(textRemixMemory.logoRegion) &&
+        textRemixMemory.logoAssetDataUrl
+    );
+  }
+
+  function clamp01(n) {
+    return Math.min(1, Math.max(0, n));
+  }
+
+  function clientPointToImageNorm(img, clientX, clientY) {
+    const rect = img.getBoundingClientRect();
+    const nw = img.naturalWidth || 1;
+    const nh = img.naturalHeight || 1;
+    const scale = Math.min(rect.width / nw, rect.height / nh);
+    const dispW = nw * scale;
+    const dispH = nh * scale;
+    const ox = rect.left + (rect.width - dispW) / 2;
+    const oy = rect.top + (rect.height - dispH) / 2;
+    return {
+      x: clamp01((clientX - ox) / Math.max(dispW, 1e-6)),
+      y: clamp01((clientY - oy) / Math.max(dispH, 1e-6)),
+    };
+  }
+
+  function loadHtmlImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error("Could not load image"));
+      img.src = src;
+    });
+  }
+
+  function sampleRegionFillColor(ctx, rx, ry, rw, rh, canvasW, canvasH) {
+    const samples = [];
+    const push = (px, py) => {
+      const x = Math.min(canvasW - 1, Math.max(0, Math.round(px)));
+      const y = Math.min(canvasH - 1, Math.max(0, Math.round(py)));
+      const d = ctx.getImageData(x, y, 1, 1).data;
+      samples.push([d[0], d[1], d[2]]);
+    };
+    const inset = Math.max(1, Math.floor(Math.min(rw, rh) * 0.05));
+    for (let i = 0; i < 8; i += 1) {
+      const t = (i + 0.5) / 8;
+      push(rx + t * rw, ry - inset);
+      push(rx + t * rw, ry + rh + inset);
+      push(rx - inset, ry + t * rh);
+      push(rx + rw + inset, ry + t * rh);
+    }
+    if (!samples.length) return "#111111";
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    samples.forEach(([sr, sg, sb]) => {
+      r += sr;
+      g += sg;
+      b += sb;
+    });
+    const n = samples.length;
+    const toHex = (v) =>
+      Math.round(v / n)
+        .toString(16)
+        .padStart(2, "0");
+    return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+  }
+
+  async function applyLogoRegionSwap(baseDataUrl, regionRaw, assetDataUrl) {
+    const region = normalizeLogoRegion(regionRaw);
+    if (!region || !assetDataUrl) {
+      throw new Error("Logo region and asset are required");
+    }
+    const base = await loadHtmlImage(baseDataUrl);
+    const asset = await loadHtmlImage(assetDataUrl);
+    const canvas = document.createElement("canvas");
+    canvas.width = base.naturalWidth || base.width;
+    canvas.height = base.naturalHeight || base.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Canvas unavailable");
+    ctx.drawImage(base, 0, 0);
+    const rx = Math.round(region.x * canvas.width);
+    const ry = Math.round(region.y * canvas.height);
+    const rw = Math.max(1, Math.round(region.w * canvas.width));
+    const rh = Math.max(1, Math.round(region.h * canvas.height));
+    const fill = sampleRegionFillColor(
+      ctx,
+      rx,
+      ry,
+      rw,
+      rh,
+      canvas.width,
+      canvas.height
+    );
+    ctx.fillStyle = fill;
+    ctx.fillRect(rx, ry, rw, rh);
+    const aw = asset.naturalWidth || asset.width || 1;
+    const ah = asset.naturalHeight || asset.height || 1;
+    const scale = Math.min(rw / aw, rh / ah);
+    const dw = Math.max(1, aw * scale);
+    const dh = Math.max(1, ah * scale);
+    const dx = rx + (rw - dw) / 2;
+    const dy = ry + (rh - dh) / 2;
+    ctx.drawImage(asset, dx, dy, dw, dh);
+    return canvas.toDataURL("image/png");
+  }
+
   function updateTextRemixPrimaryBtn() {
+    const hasTexts = (textRemixMemory.texts || []).length > 0;
+    const hasCapture = Boolean(textRemixMemory.captureDataUrl);
+    const logoReady = isTextRemixLogoReady();
+
+    const detectBtn = textRemixUi.detectBtn;
+    if (detectBtn && !detectBtn.classList.contains("is-busy")) {
+      detectBtn.disabled = inFlight || !hasCapture;
+      detectBtn.title = "Detect text (and fonts/icons) in the capture";
+    }
+
     const btn = textRemixUi.primaryBtn;
     if (!btn) return;
     if (btn.classList.contains("is-busy")) return;
+    btn.textContent = "Swap Text";
+    btn.dataset.mode = "swap";
+    btn.disabled = inFlight || !hasCapture || !hasTexts;
+    btn.title = !hasTexts
+      ? "Detect text first"
+      : logoReady
+        ? "Apply logo replace + text swap"
+        : "Swap detected text on the graphic";
+
+    refreshTextRemixLogoBar();
+  }
+
+  function renderLogoRegionOverlay(overlay, region) {
+    if (!overlay) return;
+    overlay.innerHTML = "";
+    if (!region) return;
+    const mask = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    const x = region.x * 100;
+    const y = region.y * 100;
+    const w = region.w * 100;
+    const h = region.h * 100;
+    mask.setAttribute(
+      "d",
+      `M0 0H100V100H0Z M${x} ${y}H${x + w}V${y + h}H${x}Z`
+    );
+    mask.setAttribute("fill", "rgba(15,23,42,0.45)");
+    mask.setAttribute("fill-rule", "evenodd");
+    const rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("x", String(x));
+    rect.setAttribute("y", String(y));
+    rect.setAttribute("width", String(w));
+    rect.setAttribute("height", String(h));
+    rect.setAttribute("fill", "none");
+    rect.setAttribute("stroke", "#38bdf8");
+    rect.setAttribute("stroke-width", "0.6");
+    rect.setAttribute("vector-effect", "non-scaling-stroke");
+    overlay.appendChild(mask);
+    overlay.appendChild(rect);
+  }
+
+  function syncTextRemixLogoOverlay() {
+    const wrap = textRemixUi.captureWrap;
+    if (!wrap) return;
+    let overlay = wrap.querySelector(".sc-tw-logo-overlay");
+    const img = wrap.querySelector("img");
+    if (!img) {
+      overlay?.remove();
+      return;
+    }
+    if (!overlay) {
+      overlay = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+      overlay.classList.add("sc-tw-logo-overlay");
+      overlay.setAttribute("viewBox", "0 0 100 100");
+      overlay.setAttribute("preserveAspectRatio", "none");
+      wrap.appendChild(overlay);
+    }
+    const wrapRect = wrap.getBoundingClientRect();
+    const rect = img.getBoundingClientRect();
+    const nw = img.naturalWidth || 1;
+    const nh = img.naturalHeight || 1;
+    const scale = Math.min(rect.width / nw, rect.height / nh);
+    const dispW = nw * scale;
+    const dispH = nh * scale;
+    const left = rect.left - wrapRect.left + (rect.width - dispW) / 2;
+    const top = rect.top - wrapRect.top + (rect.height - dispH) / 2;
+    overlay.style.left = `${left}px`;
+    overlay.style.top = `${top}px`;
+    overlay.style.width = `${dispW}px`;
+    overlay.style.height = `${dispH}px`;
+    overlay.classList.toggle("is-selecting", textRemixLogoSelectActive);
+    renderLogoRegionOverlay(
+      overlay,
+      textRemixLogoDrag?.live || textRemixMemory.logoRegion
+    );
+  }
+
+  function stopTextRemixLogoSelect() {
+    textRemixLogoSelectActive = false;
+    textRemixLogoDrag = null;
+    const wrap = textRemixUi.captureWrap;
+    if (wrap) {
+      wrap.classList.remove("is-logo-selecting");
+      wrap.onpointerdown = null;
+      wrap.onpointermove = null;
+      wrap.onpointerup = null;
+      wrap.onpointercancel = null;
+    }
+    if (textRemixUi.selectLogoBtn) {
+      textRemixUi.selectLogoBtn.classList.remove("is-active");
+      textRemixUi.selectLogoBtn.textContent = "Select logo area";
+    }
+    syncTextRemixLogoOverlay();
+  }
+
+  function startTextRemixLogoSelect() {
+    const wrap = textRemixUi.captureWrap;
+    const img = wrap?.querySelector("img");
+    if (!wrap || !img || !textRemixMemory.captureDataUrl) {
+      alert("Capture a graphic first.");
+      return;
+    }
+    if (!(textRemixMemory.texts || []).length) {
+      alert("Detect text first, then select the logo area.");
+      return;
+    }
+    textRemixLogoSelectActive = true;
+    wrap.classList.add("is-logo-selecting");
+    if (textRemixUi.selectLogoBtn) {
+      textRemixUi.selectLogoBtn.classList.add("is-active");
+      textRemixUi.selectLogoBtn.textContent = "Dragging…";
+    }
+    syncTextRemixLogoOverlay();
+
+    const onDown = (e) => {
+      if (e.button != null && e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const p = clientPointToImageNorm(img, e.clientX, e.clientY);
+      textRemixLogoDrag = { x0: p.x, y0: p.y, live: null };
+      wrap.setPointerCapture?.(e.pointerId);
+    };
+    const onMove = (e) => {
+      if (!textRemixLogoDrag) return;
+      e.preventDefault();
+      const p = clientPointToImageNorm(img, e.clientX, e.clientY);
+      const x = Math.min(textRemixLogoDrag.x0, p.x);
+      const y = Math.min(textRemixLogoDrag.y0, p.y);
+      const w = Math.abs(p.x - textRemixLogoDrag.x0);
+      const h = Math.abs(p.y - textRemixLogoDrag.y0);
+      textRemixLogoDrag.live = { x, y, w, h };
+      syncTextRemixLogoOverlay();
+    };
+    const onUp = async (e) => {
+      if (!textRemixLogoDrag) return;
+      e.preventDefault();
+      const live = textRemixLogoDrag.live;
+      textRemixLogoDrag = null;
+      try {
+        wrap.releasePointerCapture?.(e.pointerId);
+      } catch (_err) {
+        /* ignore */
+      }
+      const region = normalizeLogoRegion(live);
+      stopTextRemixLogoSelect();
+      if (!region) {
+        alert("Drag a larger box over the logo.");
+        return;
+      }
+      await saveTextRemixMemory({
+        logoRegion: region,
+        cleanPlateDataUrl: null,
+      });
+      refreshTextRemixLogoBar();
+      syncTextRemixLogoOverlay();
+      updateTextRemixPrimaryBtn();
+    };
+    wrap.onpointerdown = onDown;
+    wrap.onpointermove = onMove;
+    wrap.onpointerup = onUp;
+    wrap.onpointercancel = onUp;
+  }
+
+  async function refreshTextRemixLogoAssetPanel() {
+    const panel = textRemixUi.logoAssetPanel;
+    const list = textRemixUi.logoAssetList;
+    if (!panel || !list) return;
+    list.innerHTML = "";
+    if (!window.SeeCaptureAssets?.listAssets) {
+      const empty = document.createElement("div");
+      empty.className = "sc-tw-logo-empty";
+      empty.textContent = "Assets vault unavailable.";
+      list.appendChild(empty);
+      return;
+    }
+    const assets = await window.SeeCaptureAssets.listAssets("image");
+    if (!assets.length) {
+      const empty = document.createElement("div");
+      empty.className = "sc-tw-logo-empty";
+      empty.textContent = "No image assets yet. Upload a logo.";
+      list.appendChild(empty);
+      return;
+    }
+    assets.forEach((asset) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "sc-tw-logo-asset";
+      if (asset.id === textRemixMemory.logoAssetId) {
+        item.classList.add("is-selected");
+      }
+      const thumb = document.createElement("img");
+      thumb.src = asset.dataUrl;
+      thumb.alt = asset.name || "asset";
+      const name = document.createElement("span");
+      name.textContent = asset.name || "asset";
+      item.appendChild(thumb);
+      item.appendChild(name);
+      item.addEventListener("click", async () => {
+        await saveTextRemixMemory({
+          logoAssetId: asset.id,
+          logoAssetDataUrl: asset.dataUrl,
+          cleanPlateDataUrl: null,
+        });
+        panel.classList.add("is-hidden");
+        refreshTextRemixLogoBar();
+        updateTextRemixPrimaryBtn();
+      });
+      list.appendChild(item);
+    });
+  }
+
+  function refreshTextRemixLogoBar() {
+    const bar = textRemixUi.logoBar;
+    if (!bar) return;
     const hasTexts = (textRemixMemory.texts || []).length > 0;
     const hasCapture = Boolean(textRemixMemory.captureDataUrl);
-    btn.textContent = hasTexts ? "Swap Text" : "Detect text";
-    btn.disabled = inFlight || (!hasTexts && !hasCapture);
-    btn.title = hasTexts
-      ? "Swap detected text on the graphic"
-      : "Detect text in the capture";
-    btn.dataset.mode = hasTexts ? "swap" : "detect";
+    const region = normalizeLogoRegion(textRemixMemory.logoRegion);
+    const hasAsset = Boolean(textRemixMemory.logoAssetDataUrl);
+
+    bar.classList.toggle("is-hidden", !hasTexts);
+    if (textRemixUi.logoAssetPanel && !hasTexts) {
+      textRemixUi.logoAssetPanel.classList.add("is-hidden");
+    }
+    if (!hasTexts && textRemixLogoSelectActive) {
+      stopTextRemixLogoSelect();
+    }
+
+    if (textRemixUi.selectLogoBtn) {
+      textRemixUi.selectLogoBtn.disabled =
+        !hasTexts || !hasCapture || inFlight;
+      if (!textRemixLogoSelectActive) {
+        textRemixUi.selectLogoBtn.textContent = region
+          ? "Reselect logo area"
+          : "Select logo area";
+      }
+    }
+    if (textRemixUi.chooseLogoBtn) {
+      textRemixUi.chooseLogoBtn.disabled =
+        !hasTexts || !region || !hasCapture || inFlight;
+    }
+    if (textRemixUi.clearLogoBtn) {
+      textRemixUi.clearLogoBtn.disabled =
+        !hasTexts || (!region && !hasAsset) || inFlight;
+    }
+    const chip = textRemixUi.logoChip;
+    if (chip) {
+      chip.innerHTML = "";
+      if (region) {
+        const label = document.createElement("span");
+        label.textContent = hasAsset
+          ? "Logo ready"
+          : "Region selected — choose asset";
+        chip.appendChild(label);
+        if (hasAsset) {
+          const thumb = document.createElement("img");
+          thumb.src = textRemixMemory.logoAssetDataUrl;
+          thumb.alt = "Logo asset";
+          chip.appendChild(thumb);
+        }
+        chip.classList.remove("is-hidden");
+      } else {
+        chip.classList.add("is-hidden");
+      }
+    }
   }
 
   function attachTextRemixCaptureActions(wrap) {
@@ -1605,6 +2021,7 @@
     captureBtn.textContent = "Capture graphic";
     captureBtn.addEventListener("click", (e) => {
       e.stopPropagation();
+      stopTextRemixLogoSelect();
       startTextWorkflowCapture("text-remix");
     });
 
@@ -1624,10 +2041,14 @@
     wrap.appendChild(actions);
     textRemixUi.captureBtn = captureBtn;
     textRemixUi.previewBtn = previewBtn;
+    syncTextRemixLogoOverlay();
+    refreshTextRemixLogoBar();
   }
 
   function fillRemixPane(wrap, dataUrl, emptyText, kind) {
     if (!wrap) return;
+    const wasSelecting = textRemixLogoSelectActive && kind === "capture";
+    if (wasSelecting) stopTextRemixLogoSelect();
     wrap.innerHTML = "";
     if (!dataUrl) {
       const empty = document.createElement("div");
@@ -1679,6 +2100,25 @@
     wrap.appendChild(actions);
   }
 
+  function formatTextRemixMeta(row) {
+    const bits = [
+      row.role || "",
+      row.fontFamily || row.fontStyle || "",
+      row.weight || "",
+      row.sizeHint || "",
+      row.color || "",
+      row.hasShadow === true
+        ? "shadow"
+        : row.hasShadow === false
+          ? "no shadow"
+          : "",
+    ].filter(Boolean);
+    const head = bits.join(" · ");
+    const notes = String(row.notes || "").trim();
+    if (head && notes) return `${head} — ${notes}`;
+    return head || notes || "";
+  }
+
   function refreshTextRemixUi() {
     fillRemixPane(
       textRemixUi.captureWrap,
@@ -1692,15 +2132,49 @@
       "Swapped result appears here",
       "result"
     );
+    const iconsEl = textRemixUi.icons;
+    if (iconsEl) {
+      iconsEl.innerHTML = "";
+      const icons = textRemixMemory.icons || [];
+      if (icons.length) {
+        const label = document.createElement("div");
+        label.className = "sc-tw-icons-label";
+        label.textContent = "Icons detected";
+        iconsEl.appendChild(label);
+        const row = document.createElement("div");
+        row.className = "sc-tw-icons-row";
+        icons.forEach((icon) => {
+          const chip = document.createElement("span");
+          chip.className = "sc-tw-icon-chip";
+          const style = icon.style && icon.style !== "other" ? ` · ${icon.style}` : "";
+          chip.textContent = `${icon.description || "icon"}${style}`;
+          row.appendChild(chip);
+        });
+        iconsEl.appendChild(row);
+        iconsEl.classList.remove("is-hidden");
+      } else {
+        iconsEl.classList.add("is-hidden");
+      }
+    }
     const list = textRemixUi.list;
     if (list) {
       list.innerHTML = "";
       (textRemixMemory.texts || []).forEach((row, index) => {
         const item = document.createElement("div");
         item.className = "sc-tw-row";
+        const originalCol = document.createElement("div");
+        originalCol.className = "sc-tw-original-col";
         const original = document.createElement("div");
         original.className = "sc-tw-original";
         original.textContent = row.text;
+        originalCol.appendChild(original);
+        const meta = formatTextRemixMeta(row);
+        if (meta) {
+          const metaEl = document.createElement("div");
+          metaEl.className = "sc-tw-meta";
+          metaEl.textContent = meta;
+          originalCol.appendChild(metaEl);
+        }
         const input = document.createElement("input");
         input.type = "text";
         input.className = "sc-tw-input";
@@ -1712,11 +2186,13 @@
             newText: input.value,
           };
         });
-        item.appendChild(original);
+        item.appendChild(originalCol);
         item.appendChild(input);
         list.appendChild(item);
       });
     }
+    refreshTextRemixLogoBar();
+    syncTextRemixLogoOverlay();
     updateTextRemixPrimaryBtn();
   }
 
@@ -1839,24 +2315,175 @@
     body.appendChild(left);
     body.appendChild(right);
 
+    const logoBar = document.createElement("div");
+    logoBar.className = "sc-tw-logo-bar is-hidden";
+    textRemixUi.logoBar = logoBar;
+
+    const logoHead = document.createElement("div");
+    logoHead.className = "sc-tw-logo-head";
+    const logoTitle = document.createElement("span");
+    logoTitle.className = "sc-tw-logo-title";
+    logoTitle.textContent = "Replace logo";
+    const logoHint = document.createElement("span");
+    logoHint.className = "sc-tw-logo-hint";
+    logoHint.textContent = "Optional — drag area, then choose asset";
+    logoHead.appendChild(logoTitle);
+    logoHead.appendChild(logoHint);
+
+    const logoActions = document.createElement("div");
+    logoActions.className = "sc-tw-logo-actions";
+
+    const selectLogoBtn = document.createElement("button");
+    selectLogoBtn.type = "button";
+    selectLogoBtn.className = "sc-mashup-capture-btn sc-tw-select-logo-btn";
+    selectLogoBtn.textContent = "Select logo area";
+    selectLogoBtn.disabled = true;
+    selectLogoBtn.addEventListener("click", () => {
+      if (textRemixLogoSelectActive) stopTextRemixLogoSelect();
+      else startTextRemixLogoSelect();
+    });
+    textRemixUi.selectLogoBtn = selectLogoBtn;
+
+    const chooseLogoBtn = document.createElement("button");
+    chooseLogoBtn.type = "button";
+    chooseLogoBtn.className = "sc-mashup-capture-btn";
+    chooseLogoBtn.textContent = "Choose logo asset";
+    chooseLogoBtn.disabled = true;
+    chooseLogoBtn.addEventListener("click", async () => {
+      if (!normalizeLogoRegion(textRemixMemory.logoRegion)) {
+        alert("Select a logo area first.");
+        return;
+      }
+      const panel = textRemixUi.logoAssetPanel;
+      if (!panel) return;
+      panel.classList.toggle("is-hidden");
+      if (!panel.classList.contains("is-hidden")) {
+        await refreshTextRemixLogoAssetPanel();
+      }
+    });
+    textRemixUi.chooseLogoBtn = chooseLogoBtn;
+
+    const clearLogoBtn = document.createElement("button");
+    clearLogoBtn.type = "button";
+    clearLogoBtn.className = "sc-mashup-capture-btn";
+    clearLogoBtn.textContent = "Clear logo";
+    clearLogoBtn.disabled = true;
+    clearLogoBtn.addEventListener("click", async () => {
+      stopTextRemixLogoSelect();
+      textRemixUi.logoAssetPanel?.classList.add("is-hidden");
+      await saveTextRemixMemory({
+        logoRegion: null,
+        logoAssetId: null,
+        logoAssetDataUrl: null,
+        cleanPlateDataUrl: null,
+      });
+      refreshTextRemixLogoBar();
+      syncTextRemixLogoOverlay();
+      updateTextRemixPrimaryBtn();
+    });
+    textRemixUi.clearLogoBtn = clearLogoBtn;
+
+    const logoChip = document.createElement("div");
+    logoChip.className = "sc-tw-logo-chip is-hidden";
+    textRemixUi.logoChip = logoChip;
+
+    logoActions.appendChild(selectLogoBtn);
+    logoActions.appendChild(chooseLogoBtn);
+    logoActions.appendChild(clearLogoBtn);
+    logoActions.appendChild(logoChip);
+    logoBar.appendChild(logoHead);
+    logoBar.appendChild(logoActions);
+
+    const logoAssetPanel = document.createElement("div");
+    logoAssetPanel.className = "sc-tw-logo-assets is-hidden";
+    textRemixUi.logoAssetPanel = logoAssetPanel;
+    const uploadRow = document.createElement("div");
+    uploadRow.className = "sc-tw-logo-upload-row";
+    const uploadBtn = document.createElement("button");
+    uploadBtn.type = "button";
+    uploadBtn.className = "sc-mashup-capture-btn";
+    uploadBtn.textContent = "Upload logo";
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = "image/png,image/jpeg,image/webp,image/svg+xml";
+    fileInput.hidden = true;
+    uploadBtn.addEventListener("click", () => fileInput.click());
+    fileInput.addEventListener("change", async () => {
+      const file = fileInput.files?.[0];
+      fileInput.value = "";
+      if (!file) return;
+      if (!window.SeeCaptureAssets?.saveAsset) {
+        alert("Assets vault unavailable.");
+        return;
+      }
+      try {
+        const dataUrl = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve(String(reader.result || ""));
+          reader.onerror = () => reject(new Error("Read failed"));
+          reader.readAsDataURL(file);
+        });
+        const saved = await window.SeeCaptureAssets.saveAsset({
+          name: file.name || "logo",
+          mime: file.type || "image/png",
+          dataUrl,
+          kind: "image",
+        });
+        await saveTextRemixMemory({
+          logoAssetId: saved.id,
+          logoAssetDataUrl: saved.dataUrl,
+          cleanPlateDataUrl: null,
+        });
+        logoAssetPanel.classList.add("is-hidden");
+        refreshTextRemixLogoBar();
+        updateTextRemixPrimaryBtn();
+      } catch (err) {
+        alert(err?.message || "Could not upload logo");
+      }
+    });
+    uploadRow.appendChild(uploadBtn);
+    uploadRow.appendChild(fileInput);
+    const logoAssetList = document.createElement("div");
+    logoAssetList.className = "sc-tw-logo-asset-list";
+    textRemixUi.logoAssetList = logoAssetList;
+    logoAssetPanel.appendChild(uploadRow);
+    logoAssetPanel.appendChild(logoAssetList);
+
+    const icons = document.createElement("div");
+    icons.className = "sc-tw-icons is-hidden";
+    textRemixUi.icons = icons;
+
     const list = document.createElement("div");
     list.className = "sc-tw-list";
     textRemixUi.list = list;
 
+    const actionsRow = document.createElement("div");
+    actionsRow.className = "sc-tw-primary-row";
+
+    const detectBtn = document.createElement("button");
+    detectBtn.type = "button";
+    detectBtn.className = "sc-mashup-capture-btn sc-tw-detect-btn";
+    detectBtn.textContent = "Detect text";
+    detectBtn.addEventListener("click", () => runTextRemixDetect());
+    textRemixUi.detectBtn = detectBtn;
+
     const primaryBtn = document.createElement("button");
     primaryBtn.type = "button";
     primaryBtn.className = "sc-mashup-generate sc-tw-swap-btn sc-tw-primary-btn";
-    primaryBtn.textContent = "Detect text";
-    primaryBtn.dataset.mode = "detect";
-    primaryBtn.addEventListener("click", () => {
-      if (primaryBtn.dataset.mode === "swap") runTextRemixSwap();
-      else runTextRemixDetect();
-    });
+    primaryBtn.textContent = "Swap Text";
+    primaryBtn.dataset.mode = "swap";
+    primaryBtn.addEventListener("click", () => runTextRemixSwap());
     textRemixUi.primaryBtn = primaryBtn;
 
+    actionsRow.appendChild(detectBtn);
+    actionsRow.appendChild(primaryBtn);
+
     wrap.appendChild(body);
+    wrap.appendChild(icons);
+    wrap.appendChild(logoBar);
+    wrap.appendChild(logoAssetPanel);
     wrap.appendChild(list);
-    wrap.appendChild(primaryBtn);
+    wrap.appendChild(actionsRow);
     refreshTextRemixUi();
     return wrap;
   }
@@ -2271,14 +2898,19 @@
     if (captureWrap) captureWrap.classList.add("is-busy");
     if (textRemixUi.captureBtn) textRemixUi.captureBtn.disabled = true;
     if (textRemixUi.previewBtn) textRemixUi.previewBtn.disabled = true;
-    setButtonBusy(textRemixUi.primaryBtn, true, "Detect text", "Detecting…");
+    if (textRemixUi.selectLogoBtn) textRemixUi.selectLogoBtn.disabled = true;
+    if (textRemixUi.chooseLogoBtn) textRemixUi.chooseLogoBtn.disabled = true;
+    if (textRemixUi.clearLogoBtn) textRemixUi.clearLogoBtn.disabled = true;
+    setButtonBusy(textRemixUi.detectBtn, true, "Detect text", "Detecting…");
+    if (textRemixUi.primaryBtn) textRemixUi.primaryBtn.disabled = true;
     try {
       const data = await requestDetectText(textRemixMemory.captureDataUrl);
       const texts = (data.texts || []).map((t) => ({
         ...t,
         newText: t.text,
       }));
-      await saveTextRemixMemory({ texts });
+      const icons = Array.isArray(data.icons) ? data.icons : [];
+      await saveTextRemixMemory({ texts, icons, cleanPlateDataUrl: null });
       refreshTextRemixUi();
       if (!texts.length) {
         alert("No text found in this graphic.");
@@ -2292,11 +2924,7 @@
       if (textRemixUi.previewBtn) {
         textRemixUi.previewBtn.disabled = !textRemixMemory.captureDataUrl;
       }
-      setButtonBusy(
-        textRemixUi.primaryBtn,
-        false,
-        (textRemixMemory.texts || []).length ? "Swap Text" : "Detect text"
-      );
+      setButtonBusy(textRemixUi.detectBtn, false, "Detect text");
       updateTextRemixPrimaryBtn();
     }
   }
@@ -2306,23 +2934,37 @@
       alert("Capture a graphic first.");
       return;
     }
-    if (!(textRemixMemory.texts || []).length) {
-      alert("Detect text first.");
-      return;
-    }
+    const logoReady = isTextRemixLogoReady();
     const replacements = (textRemixMemory.texts || [])
       .map((t) => ({
         from: t.text,
         to: String(t.newText != null ? t.newText : t.text).trim(),
+        role: t.role,
+        fontStyle: t.fontStyle,
+        fontFamily: t.fontFamily,
+        weight: t.weight,
+        sizeHint: t.sizeHint,
+        color: t.color,
+        hasShadow: t.hasShadow === true,
+        notes: t.notes,
       }))
       .filter((r) => r.from && r.to && r.from !== r.to);
-    if (!replacements.length) {
-      alert("Change at least one line of copy before swapping.");
+    if (!replacements.length && !logoReady) {
+      if ((textRemixMemory.texts || []).length) {
+        alert("Change at least one line of copy, or set a logo area + asset.");
+      } else {
+        alert("Detect text first.");
+      }
+      return;
+    }
+    if (normalizeLogoRegion(textRemixMemory.logoRegion) && !textRemixMemory.logoAssetDataUrl) {
+      alert("Choose a logo asset for the selected region.");
       return;
     }
     if (inFlight) return;
     inFlight = true;
     setButtonBusy(textRemixUi.primaryBtn, true, "Swap Text", "Swapping…");
+    if (textRemixUi.detectBtn) textRemixUi.detectBtn.disabled = true;
     const resultWrap = textRemixUi.resultWrap;
     if (resultWrap) {
       resultWrap.innerHTML = "";
@@ -2331,16 +2973,59 @@
       const spinner = document.createElement("div");
       spinner.className = "sc-spinner";
       const label = document.createElement("span");
-      label.textContent = "Swapping text…";
+      label.textContent = logoReady ? "Replacing logo…" : "Swapping text…";
       status.appendChild(spinner);
       status.appendChild(label);
       resultWrap.appendChild(status);
     }
     try {
+      let workingUrl = textRemixMemory.captureDataUrl;
+      if (logoReady) {
+        workingUrl = await applyLogoRegionSwap(
+          workingUrl,
+          textRemixMemory.logoRegion,
+          textRemixMemory.logoAssetDataUrl
+        );
+        await saveTextRemixMemory({ cleanPlateDataUrl: null });
+      }
+
+      if (!replacements.length) {
+        await saveTextRemixMemory({ resultDataUrl: workingUrl });
+        refreshTextRemixUi();
+        return;
+      }
+
+      let cleanPlate = textRemixMemory.cleanPlateDataUrl;
+      if (!cleanPlate || logoReady) {
+        if (resultWrap) {
+          const label = resultWrap.querySelector(".sc-status span");
+          if (label) label.textContent = "Building clean plate…";
+        }
+        const eraseSources = (textRemixMemory.texts || []).length
+          ? textRemixMemory.texts
+          : replacements;
+        const eraseData = await requestTextSwap({
+          presetId: "text-remix",
+          imageDataUrl: workingUrl,
+          replacements: eraseSources.map((t) => ({
+            from: t.text || t.from,
+            to: t.text || t.from,
+            text: t.text || t.from,
+          })),
+          eraseTextOnly: true,
+        });
+        cleanPlate = eraseData.imageDataUrl;
+        await saveTextRemixMemory({ cleanPlateDataUrl: cleanPlate });
+      }
+      if (resultWrap) {
+        const label = resultWrap.querySelector(".sc-status span");
+        if (label) label.textContent = "Painting new copy…";
+      }
       const data = await requestTextSwap({
         presetId: "text-remix",
-        imageDataUrl: textRemixMemory.captureDataUrl,
+        imageDataUrl: cleanPlate,
         replacements,
+        fromCleanPlate: true,
       });
       await saveTextRemixMemory({ resultDataUrl: data.imageDataUrl });
       refreshTextRemixUi();
@@ -2525,10 +3210,18 @@
     }
 
     slots.appendChild(
-      makeSlot("Slot 1 · Subject / Product", "Capture Product", "subject")
+      makeSlot(
+        "Slot 1 · Subject / Product (Image 2)",
+        "Capture Product",
+        "subject"
+      )
     );
     slots.appendChild(
-      makeSlot("Slot 2 · Style / Background", "Capture Style", "style")
+      makeSlot(
+        "Slot 2 · Style / Background (Image 1)",
+        "Capture Style",
+        "style"
+      )
     );
 
     const resultPane = document.createElement("div");
@@ -2548,7 +3241,7 @@
     prompt.className = "sc-mashup-prompt";
     prompt.rows = 2;
     prompt.placeholder =
-      "Optional: soft shadows, golden hour lighting, keep logo sharp…";
+      "Optional extra direction (appended after Image 1=style / Image 2=product roles)…";
     mashupPromptRef = prompt;
     const generateBtn = document.createElement("button");
     generateBtn.type = "button";
@@ -2596,6 +3289,7 @@
       await saveMashupMemory({ resultDataUrl: data.imageDataUrl });
       refreshMashupPreviews();
     } catch (err) {
+      await saveMashupMemory({ resultDataUrl: null });
       if (mashupResultWrapRef) {
         mashupResultWrapRef.innerHTML = "";
         const statusErr = document.createElement("div");
@@ -2605,6 +3299,13 @@
           "Mashup failed. Is the local server running on port 8787?"
         );
         mashupResultWrapRef.appendChild(statusErr);
+      } else {
+        alert(
+          formatProviderError(
+            err?.message,
+            "Mashup failed. Is the local server running on port 8787?"
+          )
+        );
       }
     } finally {
       inFlight = false;
@@ -2623,6 +3324,7 @@
       { id: "similar-variant", label: "Generate similar" },
       { id: "remove-bg", label: "Remove background" },
       { id: "get-prompt", label: "Get the prompt" },
+      { id: "get-code", label: "Get code" },
       { id: "extract-palette", label: "Extract palette" },
     ];
     quickDefs.forEach((def) => {
@@ -2633,6 +3335,7 @@
       btn.textContent = def.label;
       btn.addEventListener("click", () => {
         if (def.id === "get-prompt") runGetPrompt();
+        else if (def.id === "get-code") openGetCodeThemeSheet(rightWrap);
         else if (def.id === "extract-palette") runExtractPalette();
         else if (def.id === "similar-variant") runGenerateSimilar(rightWrap);
         else runQuickPreset(def.id, rightWrap);
@@ -3132,6 +3835,203 @@
     }
   }
 
+  const GET_CODE_THEME_DEFAULT = {
+    textStrong: "#F8FAFC",
+    textWeak: "#94A3B8",
+    strokeStrong: "#E2E8F0",
+    strokeWeak: "#334155",
+    bg: "#0F172A",
+  };
+
+  const GET_CODE_THEME_PRESETS = {
+    "Dark card": {
+      textStrong: "#F8FAFC",
+      textWeak: "#94A3B8",
+      strokeStrong: "#E2E8F0",
+      strokeWeak: "#334155",
+      bg: "#0F172A",
+    },
+    "Light marketing": {
+      textStrong: "#0F172A",
+      textWeak: "#64748B",
+      strokeStrong: "#0F172A",
+      strokeWeak: "#CBD5E1",
+      bg: "#FFFFFF",
+    },
+    Brand: {
+      textStrong: "#FFFFFF",
+      textWeak: "#C7D2FE",
+      strokeStrong: "#A5B4FC",
+      strokeWeak: "#3730A3",
+      bg: "#312E81",
+    },
+  };
+
+  const GET_CODE_THEME_FIELDS = [
+    { key: "textStrong", label: "text-strong" },
+    { key: "textWeak", label: "text-weak" },
+    { key: "strokeStrong", label: "stroke-strong" },
+    { key: "strokeWeak", label: "stroke-weak" },
+    { key: "bg", label: "bg" },
+  ];
+
+  function normalizeThemeHex(value) {
+    const raw = String(value || "").trim();
+    const m6 = raw.match(/^#?([0-9a-fA-F]{6})$/);
+    if (m6) return `#${m6[1].toUpperCase()}`;
+    const m3 = raw.match(/^#?([0-9a-fA-F]{3})$/);
+    if (m3) {
+      const [a, b, c] = m3[1].split("");
+      return `#${(a + a + b + b + c + c).toUpperCase()}`;
+    }
+    return "";
+  }
+
+  async function loadGetCodeTheme() {
+    try {
+      const data = await chrome.storage.local.get({ getCodeTheme: null });
+      if (!data.getCodeTheme || typeof data.getCodeTheme !== "object") {
+        return { ...GET_CODE_THEME_DEFAULT };
+      }
+      const out = { ...GET_CODE_THEME_DEFAULT };
+      for (const field of GET_CODE_THEME_FIELDS) {
+        const hex = normalizeThemeHex(data.getCodeTheme[field.key]);
+        if (hex) out[field.key] = hex;
+      }
+      return out;
+    } catch (_err) {
+      return { ...GET_CODE_THEME_DEFAULT };
+    }
+  }
+
+  async function saveGetCodeTheme(theme) {
+    try {
+      await chrome.storage.local.set({ getCodeTheme: theme });
+    } catch (_err) {
+      /* ignore */
+    }
+  }
+
+  function closeGetCodeThemeSheet() {
+    const existing = shadowRoot?.querySelector(".sc-get-code-sheet");
+    if (existing) existing.remove();
+  }
+
+  async function openGetCodeThemeSheet() {
+    if (!shadowRoot || inFlight) return;
+    const useResult =
+      selectedPane === "result" && Boolean(resultDataUrl);
+    const sourceUrl = useResult ? resultDataUrl : croppedDataUrl;
+    if (!sourceUrl) {
+      const targetWrap = useResult ? rightWrapRef : leftWrapRef;
+      if (targetWrap) showError(targetWrap, "Capture an image first.");
+      return;
+    }
+
+    closeGetCodeThemeSheet();
+    const theme = await loadGetCodeTheme();
+    const sheet = document.createElement("div");
+    sheet.className = "sc-get-code-sheet";
+    sheet.setAttribute("role", "dialog");
+    sheet.setAttribute("aria-label", "Get code theme");
+
+    const head = document.createElement("div");
+    head.className = "sc-get-code-sheet-head";
+    const title = document.createElement("span");
+    title.className = "sc-get-code-sheet-title";
+    title.textContent = "Theme";
+    const closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "sc-get-code-sheet-close";
+    closeBtn.textContent = "Close";
+    closeBtn.addEventListener("click", () => closeGetCodeThemeSheet());
+    head.appendChild(title);
+    head.appendChild(closeBtn);
+    sheet.appendChild(head);
+
+    const presets = document.createElement("div");
+    presets.className = "sc-get-code-presets";
+    const inputs = {};
+
+    function applyThemeToInputs(next) {
+      for (const field of GET_CODE_THEME_FIELDS) {
+        if (inputs[field.key]) inputs[field.key].value = next[field.key];
+      }
+    }
+
+    Object.keys(GET_CODE_THEME_PRESETS).forEach((name) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "sc-get-code-preset-btn";
+      btn.textContent = name;
+      btn.addEventListener("click", () => {
+        applyThemeToInputs({ ...GET_CODE_THEME_PRESETS[name] });
+      });
+      presets.appendChild(btn);
+    });
+    sheet.appendChild(presets);
+
+    const fields = document.createElement("div");
+    fields.className = "sc-get-code-fields";
+    GET_CODE_THEME_FIELDS.forEach((field) => {
+      const row = document.createElement("label");
+      row.className = "sc-get-code-field";
+      const lab = document.createElement("span");
+      lab.textContent = field.label;
+      const input = document.createElement("input");
+      input.type = "text";
+      input.className = "sc-get-code-hex";
+      input.value = theme[field.key];
+      input.spellcheck = false;
+      input.autocomplete = "off";
+      input.setAttribute("aria-label", field.label);
+      inputs[field.key] = input;
+      row.appendChild(lab);
+      row.appendChild(input);
+      fields.appendChild(row);
+    });
+    sheet.appendChild(fields);
+
+    const errEl = document.createElement("div");
+    errEl.className = "sc-get-code-sheet-error is-hidden";
+    sheet.appendChild(errEl);
+
+    const actions = document.createElement("div");
+    actions.className = "sc-get-code-sheet-actions";
+    const generateBtn = document.createElement("button");
+    generateBtn.type = "button";
+    generateBtn.className = "sc-get-code-generate";
+    generateBtn.textContent = "Generate code";
+    generateBtn.addEventListener("click", async () => {
+      const next = {};
+      const bad = [];
+      for (const field of GET_CODE_THEME_FIELDS) {
+        const hex = normalizeThemeHex(inputs[field.key].value);
+        if (!hex) bad.push(field.label);
+        else next[field.key] = hex;
+      }
+      if (bad.length) {
+        errEl.textContent = `Invalid hex: ${bad.join(", ")}`;
+        errEl.classList.remove("is-hidden");
+        return;
+      }
+      errEl.classList.add("is-hidden");
+      applyThemeToInputs(next);
+      await saveGetCodeTheme(next);
+      closeGetCodeThemeSheet();
+      runGetCode(next);
+    });
+    actions.appendChild(generateBtn);
+    sheet.appendChild(actions);
+
+    const host =
+      composerRef ||
+      shadowRoot.querySelector(".sc-composer") ||
+      shadowRoot.querySelector(".sc-modal-body") ||
+      shadowRoot;
+    host.appendChild(sheet);
+  }
+
   async function runGetPrompt() {
     const useResult =
       selectedPane === "result" && Boolean(resultDataUrl);
@@ -3161,6 +4061,49 @@
         targetWrap,
         err?.message ||
           "Could not get prompt. Is the local server running on port 8787?"
+      );
+      if (!useResult && croppedDataUrl && leftWrapRef === targetWrap) {
+        restoreCapturePaneImage();
+      }
+    } finally {
+      inFlight = false;
+      if (applyBtnRef) applyBtnRef.disabled = false;
+      buttons.forEach((b) => {
+        b.disabled = false;
+      });
+    }
+  }
+
+  async function runGetCode(theme) {
+    const useResult =
+      selectedPane === "result" && Boolean(resultDataUrl);
+    const targetWrap = useResult ? rightWrapRef : leftWrapRef;
+    const sourceUrl = useResult ? resultDataUrl : croppedDataUrl;
+    const actionTarget = useResult ? "result" : "capture";
+    if (inFlight || !sourceUrl || !targetWrap) return;
+    inFlight = true;
+    if (applyBtnRef) applyBtnRef.disabled = true;
+    const buttons = shadowRoot
+      ? [...shadowRoot.querySelectorAll(".sc-quick-btn")]
+      : [];
+    buttons.forEach((b) => {
+      b.disabled = true;
+    });
+    showWorking(targetWrap, "Writing code…");
+    try {
+      const result = await requestGetCode({
+        imageDataUrl: sourceUrl,
+        theme,
+      });
+      showCodeResult(targetWrap, result.code, result.model, {
+        imageUrl: sourceUrl,
+        actionTarget,
+      });
+    } catch (err) {
+      showError(
+        targetWrap,
+        err?.message ||
+          "Could not get code. Is the local server running on port 8787?"
       );
       if (!useResult && croppedDataUrl && leftWrapRef === targetWrap) {
         restoreCapturePaneImage();
@@ -3428,6 +4371,48 @@
     clearModalSubviews();
     hideHeaderBack();
     showCaptureChrome();
+  }
+
+  function restyleFromMoodboard(dataUrl) {
+    const url = String(dataUrl || "").trim();
+    if (!url || !modalRef) return;
+    if (moodboardViewerApi?.close) {
+      moodboardViewerApi.close();
+    } else {
+      restoreCaptureView();
+    }
+    setWorkflowMode("all");
+    croppedDataUrl = url;
+    resultDataUrl = null;
+    resultIsBlackWhite = false;
+    if (leftWrapRef) {
+      leftWrapRef.innerHTML = "";
+      leftWrapRef.classList.remove(
+        "is-busy",
+        "is-result",
+        "is-meta-scroll",
+        "has-prompt-below",
+        "has-palette-below"
+      );
+      leftWrapRef.classList.add("is-capture");
+      const img = document.createElement("img");
+      img.alt = "Captured region";
+      img.src = url;
+      leftWrapRef.appendChild(img);
+      attachImageActions(leftWrapRef, "capture");
+    }
+    if (rightWrapRef) {
+      rightWrapRef.innerHTML = "";
+      rightWrapRef.classList.remove("is-busy", "is-capture");
+      rightWrapRef.classList.add("is-result");
+      const placeholder = document.createElement("div");
+      placeholder.className = "sc-placeholder";
+      placeholder.textContent = "Generated image will appear here";
+      rightWrapRef.appendChild(placeholder);
+    }
+    setSelectedPane("capture");
+    persistLastCapture(url, null);
+    showAppToast("Ready to restyle", "Treated as a new capture");
   }
 
   async function showMoodboardsPanel() {
@@ -3824,6 +4809,9 @@
         buildShipPack,
         downloadShipPack,
         requestGetStyle,
+        onRestyleImage: (dataUrl) => {
+          restyleFromMoodboard(dataUrl);
+        },
         requestVariation: async ({ imageDataUrl, hex }) => {
           const color = String(hex || "").trim();
           try {
@@ -4114,13 +5102,15 @@
 
   function buildPromptBelow(promptText, modelId, opts) {
     const imageUrl = opts?.imageUrl || null;
+    const mode = opts?.mode === "code" ? "code" : "prompt";
     const pane = document.createElement("div");
-    pane.className = "sc-prompt-below";
+    pane.className =
+      mode === "code" ? "sc-prompt-below sc-code-below" : "sc-prompt-below";
     const toolbar = document.createElement("div");
     toolbar.className = "sc-prompt-pane-toolbar";
     const title = document.createElement("span");
     title.className = "sc-prompt-below-title";
-    title.textContent = "Prompt";
+    title.textContent = opts?.title || (mode === "code" ? "Code" : "Prompt");
     toolbar.appendChild(title);
     if (modelId) {
       const modelHint = document.createElement("span");
@@ -4133,14 +5123,34 @@
     copyBtn.type = "button";
     copyBtn.className = "sc-prompt-copy-btn";
     copyBtn.textContent = "Copy";
-    const saveBtn = document.createElement("button");
-    saveBtn.type = "button";
-    saveBtn.className = "sc-prompt-copy-btn";
-    saveBtn.textContent = "Save";
+    const previewBtn =
+      mode === "code"
+        ? (() => {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "sc-prompt-copy-btn";
+            btn.textContent = "Preview";
+            return btn;
+          })()
+        : null;
+    const saveBtn =
+      mode === "code"
+        ? null
+        : (() => {
+            const btn = document.createElement("button");
+            btn.type = "button";
+            btn.className = "sc-prompt-copy-btn";
+            btn.textContent = "Save";
+            return btn;
+          })();
     const area = document.createElement("textarea");
-    area.className = "sc-prompt-output";
+    area.className =
+      mode === "code" ? "sc-prompt-output sc-code-output" : "sc-prompt-output";
     area.value = String(promptText || "").trim();
-    area.setAttribute("aria-label", "Generated recreate prompt");
+    area.setAttribute(
+      "aria-label",
+      mode === "code" ? "Generated HTML code" : "Generated recreate prompt"
+    );
     copyBtn.addEventListener("click", async (e) => {
       e.stopPropagation();
       const text = area.value;
@@ -4156,44 +5166,81 @@
         alert("Could not copy automatically — select and copy manually.");
       }
     });
-    saveBtn.addEventListener("click", async (e) => {
-      e.stopPropagation();
-      const text = String(area.value || "").trim();
-      if (!text) {
-        alert("Prompt is empty.");
-        return;
-      }
-      if (!imageUrl) {
-        alert("Missing image for this prompt.");
-        return;
-      }
-      const lib = window.SeeCapturePromptLibrary;
-      if (!lib?.savePrompt) {
-        alert("Prompt library is not available. Reload the extension.");
-        return;
-      }
-      try {
-        saveBtn.disabled = true;
-        await lib.savePrompt({
-          prompt: text,
-          imageDataUrl: imageUrl,
-          modelId: modelId || null,
-        });
-        saveBtn.textContent = "Saved";
-        showAppToast("Prompt saved", "Open Prompts in the top bar");
-        setTimeout(() => {
-          saveBtn.textContent = "Save";
+    if (saveBtn) {
+      saveBtn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const text = String(area.value || "").trim();
+        if (!text) {
+          alert("Prompt is empty.");
+          return;
+        }
+        if (!imageUrl) {
+          alert("Missing image for this prompt.");
+          return;
+        }
+        const lib = window.SeeCapturePromptLibrary;
+        if (!lib?.savePrompt) {
+          alert("Prompt library is not available. Reload the extension.");
+          return;
+        }
+        try {
+          saveBtn.disabled = true;
+          await lib.savePrompt({
+            prompt: text,
+            imageDataUrl: imageUrl,
+            modelId: modelId || null,
+          });
+          saveBtn.textContent = "Saved";
+          showAppToast("Prompt saved", "Open Prompts in the top bar");
+          setTimeout(() => {
+            saveBtn.textContent = "Save";
+            saveBtn.disabled = false;
+          }, 1400);
+        } catch (err) {
           saveBtn.disabled = false;
-        }, 1400);
-      } catch (err) {
-        saveBtn.disabled = false;
-        alert(err?.message || "Could not save prompt");
-      }
-    });
+          alert(err?.message || "Could not save prompt");
+        }
+      });
+    }
     toolbar.appendChild(copyBtn);
-    toolbar.appendChild(saveBtn);
+    if (previewBtn) toolbar.appendChild(previewBtn);
+    if (saveBtn) toolbar.appendChild(saveBtn);
     pane.appendChild(toolbar);
     pane.appendChild(area);
+
+    if (mode === "code" && previewBtn) {
+      const previewWrap = document.createElement("div");
+      previewWrap.className = "sc-code-preview-wrap is-hidden";
+      const frame = document.createElement("iframe");
+      frame.className = "sc-code-preview-frame";
+      frame.title = "Code preview";
+      frame.setAttribute("sandbox", "allow-scripts allow-same-origin");
+      previewWrap.appendChild(frame);
+      pane.appendChild(previewWrap);
+      let previewOpen = false;
+      previewBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        previewOpen = !previewOpen;
+        if (previewOpen) {
+          frame.srcdoc = area.value;
+          previewWrap.classList.remove("is-hidden");
+          previewBtn.textContent = "Hide preview";
+          requestAnimationFrame(() => {
+            previewWrap.scrollIntoView({
+              block: "nearest",
+              behavior: "smooth",
+            });
+          });
+        } else {
+          previewWrap.classList.add("is-hidden");
+          previewBtn.textContent = "Preview";
+        }
+      });
+      area.addEventListener("input", () => {
+        if (previewOpen) frame.srcdoc = area.value;
+      });
+    }
+
     pane.addEventListener("click", (e) => e.stopPropagation());
     return pane;
   }
@@ -4234,6 +5281,55 @@
     ensurePaneImageStage(wrap, imageUrl, actionTarget);
     wrap.appendChild(
       buildPromptBelow(promptText, modelId, { imageUrl, actionTarget })
+    );
+    setSelectedPane(actionTarget === "capture" ? "capture" : "result");
+    requestAnimationFrame(() => {
+      const below = wrap.querySelector(".sc-prompt-below");
+      if (below) below.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+  }
+
+  function showCodeResult(wrap, codeText, modelId, opts) {
+    const actionTarget =
+      opts?.actionTarget === "capture" ? "capture" : "result";
+    const imageUrl =
+      opts?.imageUrl ||
+      (actionTarget === "capture"
+        ? croppedDataUrl
+        : resultDataUrl || croppedDataUrl);
+    if (!imageUrl || !wrap) {
+      if (wrap) {
+        showError(wrap, "Capture an image first, then get code.");
+      }
+      return;
+    }
+
+    if (actionTarget === "capture") {
+      setLeftPaneLabel("Code");
+    } else {
+      setRightPaneLabel("Code");
+    }
+
+    wrap.classList.remove("is-prompt", "is-palette");
+    wrap.classList.add(
+      actionTarget === "capture" ? "is-capture" : "is-result",
+      "is-palette-scroll",
+      "is-meta-scroll"
+    );
+
+    const existingBelow = wrap.querySelector(".sc-prompt-below");
+    if (existingBelow) existingBelow.remove();
+    const existingPalette = wrap.querySelector(".sc-palette-below");
+    if (existingPalette) existingPalette.remove();
+
+    ensurePaneImageStage(wrap, imageUrl, actionTarget);
+    wrap.appendChild(
+      buildPromptBelow(codeText, modelId, {
+        imageUrl,
+        actionTarget,
+        mode: "code",
+        title: "Code",
+      })
     );
     setSelectedPane(actionTarget === "capture" ? "capture" : "result");
     requestAnimationFrame(() => {
@@ -4685,6 +5781,26 @@
     return { prompt: data.prompt, model: data.model || null };
   }
 
+  async function requestGetCode({ imageDataUrl, theme }) {
+    let response;
+    try {
+      response = await fetch("http://127.0.0.1:8787/api/get-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ imageDataUrl, theme }),
+      });
+    } catch (_err) {
+      throw new Error(
+        "Could not reach local server on port 8787. Start it and try again."
+      );
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.code) {
+      throw new Error(data.error || `Get code failed (${response.status})`);
+    }
+    return { code: data.code, model: data.model || null, theme: data.theme };
+  }
+
   async function requestGetStyle(imageDataUrl) {
     let response;
     try {
@@ -4741,6 +5857,9 @@
         data.error || `Mashup failed (${response.status})`
       );
     }
+    if (data.model) {
+      console.info("[mashup] model:", data.model);
+    }
     return data;
   }
 
@@ -4791,6 +5910,8 @@
     imageDataUrl,
     replacements,
     languageLabel,
+    eraseTextOnly,
+    fromCleanPlate,
   }) {
     let response;
     try {
@@ -4802,6 +5923,8 @@
           imageDataUrl,
           replacements,
           languageLabel: languageLabel || "",
+          eraseTextOnly: Boolean(eraseTextOnly),
+          fromCleanPlate: Boolean(fromCleanPlate),
           model: "auto",
         }),
       });

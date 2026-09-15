@@ -46,12 +46,15 @@ const PRESETS = {
     label: "Generate Hybrid Mashup",
     mode: "mashup-hybrid",
     prompt:
-      "You are given two images. Image 1 is the STYLE / ENVIRONMENT scene " +
-      "(use its background, lighting, color grade, camera angle, and atmosphere). " +
-      "Image 2 is the SUBJECT / PRODUCT (preserve its exact identity, shape, logos, and geometry). " +
+      "You are given two reference images in order. " +
+      "Image 1 is the STYLE / ENVIRONMENT (Slot 2): use its background, lighting, color grade, " +
+      "camera angle, and atmosphere exactly — including plain white or studio plates when present. " +
+      "Image 2 is the SUBJECT / PRODUCT (Slot 1): preserve its exact identity, shape, logos, colors, " +
+      "and proportions — do not redesign or swap it for a different product. " +
       "Composite the subject from Image 2 into the environment from Image 1 as a clean hybrid mashup. " +
-      "Match ambient light on the subject to the scene when possible. Do not invent a different product. " +
-      "Return one edited image.",
+      "Match ambient light and contact shadows on the subject to Image 1. " +
+      "HARD CONSTRAINT: Do not invent extra objects, a new scene, or a different product. " +
+      "Do not ignore either reference. Return one edited image.",
   },
   "text-remix": {
     id: "text-remix",
@@ -60,9 +63,11 @@ const PRESETS = {
     prompt:
       "Edit the attached graphic only. Replace ONLY the listed on-image text strings. " +
       "Erase old lettering completely and paint new copy matching typography, color, " +
-      "perspective, glow/shadow, and placement. " +
-      "HARD CONSTRAINT: Do not replace the whole image. Do not invent a new photograph, " +
-      "scene, background, or layout. Keep all illustrations, colors, and composition identical " +
+      "and placement with CRISP single-layer solid-fill glyphs. " +
+      "HARD CONSTRAINT: Do not add drop shadows, outer glow, soft halo, blur underlay, or double-offset text layers " +
+      "unless the per-line instructions explicitly require a shadow. " +
+      "Do not replace the whole image. Do not invent a new photograph, " +
+      "scene, background, or layout. Keep all illustrations, icons, colors, and composition identical " +
       "except for the swapped glyphs.",
   },
   "visual-localizer": {

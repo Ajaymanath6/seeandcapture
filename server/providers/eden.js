@@ -117,13 +117,15 @@ async function removeBackgroundWithEden({ imageDataUrl, apiKey, providers }) {
 
 /**
  * Replace main subject in the scene with the asset identity (AI swap).
- * Primary: Eden v3 multi-image edits. Fallback: dual-panel + v2 generation.
+ * Primary: Eden v3 multi-image edits.
+ * Optional fallback: dual-panel + v2 generation (disabled for mashup).
  */
 async function replaceSubjectWithEden({
   sceneDataUrl,
   assetDataUrl,
   prompt,
   apiKey,
+  allowV2Fallback = true,
 }) {
   if (!apiKey) {
     throw new Error("EDEN_AI_API_KEY is not set");
@@ -143,6 +145,9 @@ async function replaceSubjectWithEden({
       model,
     });
   } catch (err) {
+    if (!allowV2Fallback) {
+      throw err;
+    }
     console.warn(
       "Eden v3 replace failed, falling back to dual-panel v2:",
       err?.message || err

@@ -203,4 +203,5 @@ module.exports = {
   FLUX_GENERATE_URL,
   FLUX_STATUS_URL,
   editWithFluxApi,
+  ensurePublicImageUrl,
 };
